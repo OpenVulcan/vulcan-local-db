@@ -3,34 +3,44 @@ name: Build and Push Docker Images
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: '选择运行模式'
+      duckdb_runner:
+        description: '指派 vldb-duckdb 的执行节点'
         required: true
-        default: 'local'
+        default: '9950x'
         type: choice
         options:
-          - local
-          - cloud (ubuntu-latest)
+          - '9950x'
+          - 'proart'
+          - 'ubuntu-latest'
+      lancedb_runner:
+        description: '指派 vldb-lancedb 的执行节点'
+        required: true
+        default: 'proart'
+        type: choice
+        options:
+          - 'proart'
+          - '9950x'
+          - 'ubuntu-latest'
 
 jobs:
   build-and-push:
-    # 【核心改动】：使用数组格式确保匹配 self-hosted 且具备特定标签的机器
-    runs-on: ${{ github.event.inputs.mode == 'local' && fromJSON(format('["self-hosted", "{0}"]', matrix.runner_tag)) || 'ubuntu-latest' }}
+    # 核心逻辑：根据 matrix 里的 choice 动态生成 runs-on
+    # 如果选了 ubuntu-latest，就直接跑；否则组合成 ["self-hosted", "标签"]
+    runs-on: ${{ matrix.choice == 'ubuntu-latest' && 'ubuntu-latest' || fromJSON(format('["self-hosted", "{0}"]', matrix.choice)) }}
     
     strategy:
-      fail-fast: false # 即使其中一个挂了，另一个也继续编
+      fail-fast: false
       matrix:
         include:
           - service: vldb-duckdb
-            runner_tag: 9950x      # 必须与你网页端填写的标签完全一致
+            choice: ${{ github.event.inputs.duckdb_runner }}
           - service: vldb-lancedb
-            runner_tag: proart     # 必须与你网页端填写的标签完全一致
+            choice: ${{ github.event.inputs.lancedb_runner }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 模拟 ARM 环境，为 iStoreOS 打造镜像
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -51,8 +61,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ secrets.DOCKER_USERNAME }}/${{ matrix.service }}:latest
-          # 缓存逻辑：
-          # 本地模式时，不传 cache-from/to，Docker 会自动使用本地磁盘的 buildkit 目录。
-          # 只有云端模式才启用 GitHub Actions 远程缓存。
-          cache-from: ${{ github.event.inputs.mode == 'cloud (ubuntu-latest)' && format('type=gha,scope={0}', matrix.service) || '' }}
-          cache-to: ${{ github.event.inputs.mode == 'cloud (ubuntu-latest)' && format('type=gha,mode=max,scope={0}', matrix.service) || '' }}
+          # 缓存优化：如果是云端节点，开启 GHA 远程缓存；本地节点直接利用本地硬盘，不传 cache 参数
+          cache-from: ${{ matrix.choice == 'ubuntu-latest' && format('type=gha,scope={0}', matrix.service) || '' }}
+          cache-to: ${{ matrix.choice == 'ubuntu-latest' && format('type=gha,mode=max,scope={0}', matrix.service) || '' }}
