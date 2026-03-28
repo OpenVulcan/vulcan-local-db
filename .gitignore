@@ -1,0 +1,8 @@
+**/target/
+**/_tmp_data/
+**/data/
+**/*.arrow.stream
+**/*.log
+**/*.exe
+**/*.pdb
+/docker-data/

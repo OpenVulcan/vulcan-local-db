@@ -1,0 +1,23 @@
+[package]
+name = "vldb-lancedb"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+build = "build.rs"
+
+[dependencies]
+tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread", "fs", "net"] }
+tonic = { version = "0.14.5", features = ["transport"] }
+tonic-prost = "0.14.5"
+prost = "0.14.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+lancedb = "0.27.1"
+arrow-array = "57.3.0"
+arrow-ipc = "57.3.0"
+arrow-schema = "57.3.0"
+futures = "0.3.32"
+
+[build-dependencies]
+tonic-prost-build = "0.14.5"
+protoc-bin-vendored = "3.2.0"
