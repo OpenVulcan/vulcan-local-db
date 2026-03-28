@@ -40,6 +40,11 @@
 docker compose -f ./docker-compose.example.yml up -d --build
 ```
 
+如果你不想本地构建，而是直接从 Docker Hub 安装已发布镜像，可以查看：
+
+- 中文：[docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)
+- English: [docs/docker-install.en.md](./docs/docker-install.en.md)
+
 默认端口：
 
 - `vldb-lancedb`：`127.0.0.1:50051`
@@ -80,6 +85,9 @@ cargo build
 - Docker 说明：
   - 中文：[docs/docker.zh-CN.md](./docs/docker.zh-CN.md)
   - English: [docs/docker.en.md](./docs/docker.en.md)
+- Docker 安装说明：
+  - 中文：[docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)
+  - English: [docs/docker-install.en.md](./docs/docker-install.en.md)
 - 服务说明：
   - `vldb-lancedb`
     - 中文：[docs/vldb-lancedb.zh-CN.md](./docs/vldb-lancedb.zh-CN.md)

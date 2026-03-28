@@ -11,6 +11,8 @@ This folder contains the detailed usage guides for VulcanLocalDb.
 
 - Docker guide: [docker.en.md](./docker.en.md)
 - Docker guide (Chinese): [docker.zh-CN.md](./docker.zh-CN.md)
+- Docker install guide: [docker-install.en.md](./docker-install.en.md)
+- Docker install guide (Chinese): [docker-install.zh-CN.md](./docker-install.zh-CN.md)
 
 ## Service Guides
 

@@ -1,61 +1,58 @@
 name: Build and Push Docker Images
 
 on:
-  # 开启纯手动触发模式
   workflow_dispatch:
-    # 顺便保留这个下拉菜单，以后你想用笔记本（self-hosted）编译时随时能切
     inputs:
-      runner_type:
-        description: '选择编译节点'
+      mode:
+        description: '选择运行模式'
         required: true
-        default: 'ubuntu-latest'
+        default: 'local'
         type: choice
         options:
-          - ubuntu-latest
-          - self-hosted
+          - local
+          - cloud (ubuntu-latest)
 
 jobs:
   build-and-push:
-    # 【核心修复】：动态读取你下拉菜单里的选择！
-    runs-on: ${{ inputs.runner_type }}
+    # 【核心改动】：使用数组格式确保匹配 self-hosted 且具备特定标签的机器
+    runs-on: ${{ github.event.inputs.mode == 'local' && fromJSON(format('["self-hosted", "{0}"]', matrix.runner_tag)) || 'ubuntu-latest' }}
     
-    # 【核心技巧】：使用矩阵策略，自动把下面的步骤跑两遍，分别对应两个引擎
     strategy:
+      fail-fast: false # 即使其中一个挂了，另一个也继续编
       matrix:
-        service: [vldb-duckdb, vldb-lancedb]
+        include:
+          - service: vldb-duckdb
+            runner_tag: 9950x      # 必须与你网页端填写的标签完全一致
+          - service: vldb-lancedb
+            runner_tag: proart     # 必须与你网页端填写的标签完全一致
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 设置 QEMU 以支持编译 iStoreOS 所需的 ARM64 架构
+      # 模拟 ARM 环境，为 iStoreOS 打造镜像
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # 启用 Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 登录 Docker Hub
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # 核心编译与推送步骤
       - name: Build and push ${{ matrix.service }}
         uses: docker/build-push-action@v5
         with:
-          # 上下文目录指向各自的子目录
           context: ./${{ matrix.service }}
-          # 指向各自的 Dockerfile
           file: ./${{ matrix.service }}/Dockerfile
-          # 一键输出 x86 和 ARM64 两个架构
           platforms: linux/amd64,linux/arm64
           push: true
-          # 镜像命名：例如 openvulcan/vldb-duckdb:latest
           tags: ${{ secrets.DOCKER_USERNAME }}/${{ matrix.service }}:latest
-          # 动态编译缓存：只有选 ubuntu-latest 时才开启 GHA 缓存，否则置空走本地磁盘缓存
-          cache-from: ${{ inputs.runner_type == 'ubuntu-latest' && format('type=gha,scope={0}', matrix.service) || '' }}
-          cache-to: ${{ inputs.runner_type == 'ubuntu-latest' && format('type=gha,mode=max,scope={0}', matrix.service) || '' }}
+          # 缓存逻辑：
+          # 本地模式时，不传 cache-from/to，Docker 会自动使用本地磁盘的 buildkit 目录。
+          # 只有云端模式才启用 GitHub Actions 远程缓存。
+          cache-from: ${{ github.event.inputs.mode == 'cloud (ubuntu-latest)' && format('type=gha,scope={0}', matrix.service) || '' }}
+          cache-to: ${{ github.event.inputs.mode == 'cloud (ubuntu-latest)' && format('type=gha,mode=max,scope={0}', matrix.service) || '' }}

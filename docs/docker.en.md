@@ -11,6 +11,8 @@ This repository now includes Docker packaging files for both services:
 Both images use Docker-specific config files and store service data under `/app/data`.
 The application still resolves relative `db_path` values against the config file directory, but the Docker configs use absolute `/app/data/...` paths so the mounted volume is unambiguous.
 
+If you want to install prebuilt Docker Hub images directly, see [docker-install.en.md](./docker-install.en.md).
+
 ## Prerequisites
 
 - Docker installed

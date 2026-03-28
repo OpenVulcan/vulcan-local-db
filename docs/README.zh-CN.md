@@ -11,6 +11,8 @@
 
 - Docker 说明：[`docker.zh-CN.md`](./docker.zh-CN.md)
 - Docker guide (English): [`docker.en.md`](./docker.en.md)
+- Docker 安装说明：[`docker-install.zh-CN.md`](./docker-install.zh-CN.md)
+- Docker install guide (English): [`docker-install.en.md`](./docker-install.en.md)
 
 ## 服务文档
 

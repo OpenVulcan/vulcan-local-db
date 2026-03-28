@@ -11,6 +11,8 @@
 这两个镜像都会在容器内使用项目自带的 Docker 配置文件，并把数据目录放在 `/app/data`。
 程序本身仍然会把相对 `db_path` 解释为“相对于配置文件所在目录”，但 Docker 配置为了避免歧义，直接使用了绝对 `/app/data/...` 路径。
 
+如果你只是想直接安装 Docker Hub 上已经发布好的镜像，可以查看 [`docker-install.zh-CN.md`](./docker-install.zh-CN.md)。
+
 ## 前置要求
 
 - 已安装 Docker

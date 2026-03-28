@@ -40,6 +40,11 @@ This repository is designed for scenarios where you want a small local gateway i
 docker compose -f ./docker-compose.example.yml up -d --build
 ```
 
+If you want to install the published images directly from Docker Hub instead of building locally, see:
+
+- English: [docs/docker-install.en.md](./docs/docker-install.en.md)
+- Chinese: [docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)
+
 Default ports:
 
 - `vldb-lancedb`: `127.0.0.1:50051`
@@ -80,6 +85,9 @@ cargo build
 - Docker guide:
   - English: [docs/docker.en.md](./docs/docker.en.md)
   - Chinese: [docs/docker.zh-CN.md](./docs/docker.zh-CN.md)
+- Docker install guide:
+  - English: [docs/docker-install.en.md](./docs/docker-install.en.md)
+  - Chinese: [docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)
 - Service guides:
   - `vldb-lancedb`
     - English: [docs/vldb-lancedb.en.md](./docs/vldb-lancedb.en.md)
