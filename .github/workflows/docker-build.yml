@@ -1,14 +1,24 @@
 name: Build and Push Docker Images
 
-# 触发条件：当你推送代码到 main 分支，或者打 v 开头的 tag 时
 on:
-  push:
-    branches: [ "main" ]
-    tags: [ 'v*' ]
+  # 开启纯手动触发模式
+  workflow_dispatch:
+    # 顺便保留这个下拉菜单，以后你想用笔记本（self-hosted）编译时随时能切
+    inputs:
+      runner_type:
+        description: '选择编译节点'
+        required: true
+        default: 'ubuntu-latest'
+        type: choice
+        options:
+          - ubuntu-latest
+          - self-hosted
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    # 【核心修复】：动态读取你下拉菜单里的选择！
+    runs-on: ${{ inputs.runner_type }}
+    
     # 【核心技巧】：使用矩阵策略，自动把下面的步骤跑两遍，分别对应两个引擎
     strategy:
       matrix:
@@ -46,3 +56,6 @@ jobs:
           push: true
           # 镜像命名：例如 openvulcan/vldb-duckdb:latest
           tags: ${{ secrets.DOCKER_USERNAME }}/${{ matrix.service }}:latest
+          # 动态编译缓存：只有选 ubuntu-latest 时才开启 GHA 缓存，否则置空走本地磁盘缓存
+          cache-from: ${{ inputs.runner_type == 'ubuntu-latest' && format('type=gha,scope={0}', matrix.service) || '' }}
+          cache-to: ${{ inputs.runner_type == 'ubuntu-latest' && format('type=gha,mode=max,scope={0}', matrix.service) || '' }}
