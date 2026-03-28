@@ -1,6 +1,10 @@
+# syntax=docker/dockerfile:1.7
+
 FROM rust:1.94-bookworm AS builder
 
 WORKDIR /workspace
+
+ARG TARGETPLATFORM
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -17,7 +21,9 @@ COPY Cargo.toml Cargo.lock build.rs rust-toolchain.toml ./
 COPY proto ./proto
 COPY src ./src
 
-RUN cargo build --locked --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=vldb-lancedb-cargo-registry-${TARGETPLATFORM},sharing=locked \
+    --mount=type=cache,target=/workspace/target,id=vldb-lancedb-target-${TARGETPLATFORM},sharing=locked \
+    cargo build --locked --release
 
 FROM debian:bookworm-slim AS runtime
 
