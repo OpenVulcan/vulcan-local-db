@@ -20,7 +20,7 @@ impl Default for Config {
         Self {
             host: "127.0.0.1".to_string(),
             port: 50051,
-            db_path: "./data/lancedb".to_string(),
+            db_path: "./data".to_string(),
         }
     }
 }

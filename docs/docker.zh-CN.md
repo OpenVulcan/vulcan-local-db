@@ -79,7 +79,7 @@ docker compose -f ./docker-compose.example.yml down
 
 - `vldb-lancedb` 的容器配置把 `host` 改成了 `0.0.0.0`
 - `vldb-duckdb` 的容器配置同样监听 `0.0.0.0`
-- `vldb-lancedb/docker/vldb-lancedb.json` 使用 `/app/data/lancedb`
+- `vldb-lancedb/docker/vldb-lancedb.json` 使用 `/app/data`
 - `vldb-duckdb/docker/vldb-duckdb.json` 使用 `/app/data/duckdb.db`
 - 两个服务都把数据目录写到 `/app/data`
 

@@ -82,7 +82,7 @@ docker run -d \
 
 - 镜像默认使用 `vldb-lancedb/docker/vldb-lancedb.json`
 - 这个 Docker 配置会监听 `0.0.0.0`
-- 这个 Docker 配置使用 `db_path: "/app/data/lancedb"`，会直接写入挂载的 `/app/data`
+- 这个 Docker 配置使用 `db_path: "/app/data"`，会直接写入挂载的 `/app/data` 根目录
 - LanceDB 数据会写入容器内 `/app/data`
 - 在 Windows 的 Docker Desktop 环境下，推荐优先使用 Docker 命名卷做持久化
 
@@ -94,7 +94,7 @@ docker run -d \
 {
   "host": "127.0.0.1",
   "port": 50051,
-  "db_path": "./data/lancedb"
+  "db_path": "./data"
 }
 ```
 

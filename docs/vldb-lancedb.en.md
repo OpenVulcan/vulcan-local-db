@@ -82,7 +82,7 @@ Notes:
 
 - the image uses `vldb-lancedb/docker/vldb-lancedb.json`
 - the Docker config binds to `0.0.0.0`
-- the Docker config uses `db_path: "/app/data/lancedb"` so LanceDB writes directly to the mounted volume
+- the Docker config uses `db_path: "/app/data"` so LanceDB writes directly to the mounted volume root
 - LanceDB data is stored under `/app/data` inside the container
 - on Docker Desktop for Windows, a Docker named volume is the recommended persistence option
 
@@ -94,7 +94,7 @@ Default example:
 {
   "host": "127.0.0.1",
   "port": 50051,
-  "db_path": "./data/lancedb"
+  "db_path": "./data"
 }
 ```
 

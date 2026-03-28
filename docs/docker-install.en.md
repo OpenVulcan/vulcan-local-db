@@ -166,6 +166,6 @@ docker compose up -d
 ## Notes
 
 - These images expose gRPC services, not REST services.
-- `vldb-lancedb` stores data under `/app/data/lancedb`.
+- `vldb-lancedb` stores data directly under `/app/data`.
 - `vldb-duckdb` stores data under `/app/data/duckdb.db`.
 - Named volumes are the safest default for persistence.

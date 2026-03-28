@@ -22,7 +22,7 @@ URI-like `db_path` values containing `://` are used as-is.
 {
   "host": "127.0.0.1",
   "port": 50051,
-  "db_path": "./data/lancedb"
+  "db_path": "./data"
 }
 ```
 
@@ -58,7 +58,7 @@ docker run -d \
 ```
 
 The image uses `docker/vldb-lancedb.json`, which binds to `0.0.0.0` for container networking.
-Its Docker-specific `db_path` is `/app/data/lancedb`, so LanceDB writes directly to the mounted volume.
+Its Docker-specific `db_path` is `/app/data`, so LanceDB writes directly to the mounted volume root.
 On Docker Desktop for Windows, a Docker named volume is the recommended data mount for LanceDB.
 
 ## API summary

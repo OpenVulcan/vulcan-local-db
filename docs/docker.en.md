@@ -79,7 +79,7 @@ Notes:
 
 - `vldb-lancedb` uses `0.0.0.0` inside the container instead of `127.0.0.1`
 - `vldb-duckdb` also listens on `0.0.0.0`
-- `vldb-lancedb/docker/vldb-lancedb.json` uses `/app/data/lancedb`
+- `vldb-lancedb/docker/vldb-lancedb.json` uses `/app/data`
 - `vldb-duckdb/docker/vldb-duckdb.json` uses `/app/data/duckdb.db`
 - both services write their data under `/app/data`
 

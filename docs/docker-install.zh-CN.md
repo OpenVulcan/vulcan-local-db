@@ -166,6 +166,6 @@ docker compose up -d
 ## 注意事项
 
 - 这两个镜像提供的是 gRPC 服务，不是 REST 服务。
-- `vldb-lancedb` 的数据默认写入 `/app/data/lancedb`。
+- `vldb-lancedb` 的数据默认直接写入 `/app/data`。
 - `vldb-duckdb` 的数据默认写入 `/app/data/duckdb.db`。
 - 默认推荐使用 Docker 命名卷做持久化。
