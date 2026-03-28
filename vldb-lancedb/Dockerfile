@@ -23,7 +23,8 @@ COPY src ./src
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=vldb-lancedb-cargo-registry-${TARGETPLATFORM},sharing=locked \
     --mount=type=cache,target=/workspace/target,id=vldb-lancedb-target-${TARGETPLATFORM},sharing=locked \
-    cargo build --locked --release
+    cargo build --locked --release \
+    && install -Dm755 /workspace/target/release/vldb-lancedb /out/vldb-lancedb
 
 FROM debian:bookworm-slim AS runtime
 
@@ -37,7 +38,7 @@ WORKDIR /app
 
 RUN mkdir -p /app/config /app/data
 
-COPY --from=builder /workspace/target/release/vldb-lancedb /usr/local/bin/vldb-lancedb
+COPY --from=builder /out/vldb-lancedb /usr/local/bin/vldb-lancedb
 COPY docker/vldb-lancedb.json /app/config/vldb-lancedb.json
 
 EXPOSE 50051

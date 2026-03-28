@@ -23,7 +23,8 @@ COPY src ./src
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=vldb-duckdb-cargo-registry-${TARGETPLATFORM},sharing=locked \
     --mount=type=cache,target=/workspace/target,id=vldb-duckdb-target-${TARGETPLATFORM},sharing=locked \
-    cargo build --locked --release
+    cargo build --locked --release \
+    && install -Dm755 /workspace/target/release/vldb-duckdb /out/vldb-duckdb
 
 FROM debian:bookworm-slim AS runtime
 
@@ -37,7 +38,7 @@ WORKDIR /app
 
 RUN mkdir -p /app/config /app/data
 
-COPY --from=builder /workspace/target/release/vldb-duckdb /usr/local/bin/vldb-duckdb
+COPY --from=builder /out/vldb-duckdb /usr/local/bin/vldb-duckdb
 COPY docker/vldb-duckdb.json /app/config/vldb-duckdb.json
 
 EXPOSE 50052
