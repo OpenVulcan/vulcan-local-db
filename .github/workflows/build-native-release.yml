@@ -32,7 +32,7 @@ concurrency:
   group: native-release-${{ github.workflow }}-${{ github.ref_name || github.run_id }}
   cancel-in-progress: false
 
-# 【融合点 1】：全局强制使用 Node.js 24，彻底消灭那 7 个弃用警告
+# 全局强制使用 Node.js 24，彻底消灭弃用警告
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -55,7 +55,6 @@ jobs:
             runner: ${{ inputs.lancedb_linux_runner || 'ubuntu-24.04' }} 
             runner_mode: dynamic 
             target: aarch64-unknown-linux-gnu
-          # 【融合点 2】：果断裁切 LanceDB 的 x86_64-apple-darwin，放弃老旧 Intel Mac 支持，解决 AVX-512 编译死锁
           - service: vldb-lancedb
             binary: vldb-lancedb
             runner: macos-15
@@ -78,11 +77,6 @@ jobs:
             runner: ${{ inputs.duckdb_linux_runner || 'ubuntu-24.04' }} 
             runner_mode: dynamic 
             target: aarch64-unknown-linux-gnu
-          - service: vldb-duckdb
-            binary: vldb-duckdb
-            runner: macos-15
-            runner_mode: fixed
-            target: x86_64-apple-darwin
           - service: vldb-duckdb
             binary: vldb-duckdb
             runner: macos-15
@@ -116,7 +110,6 @@ jobs:
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
         run: |
-          # 【融合点 3】：精细化控制，消灭 CMake 重复安装警告
           brew update
           if ! command -v cmake >/dev/null 2>&1; then
             brew install cmake
