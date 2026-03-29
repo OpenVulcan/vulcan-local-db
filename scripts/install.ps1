@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.13"
+$ScriptVersion = "0.1.14"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
 $GlobalHome = Join-Path $HOME ".vulcan\vldb"

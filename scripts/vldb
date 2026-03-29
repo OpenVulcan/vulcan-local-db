@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.13"
+SCRIPT_VERSION="0.1.14"
 GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
@@ -637,6 +637,17 @@ is_valid_port() {
   (( value >= 1 && value <= 65535 ))
 }
 
+is_valid_bind_ip() {
+  local value="$1"
+  local part
+
+  [[ "${value}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  IFS=. read -r -a parts <<< "${value}"
+  for part in "${parts[@]}"; do
+    (( part >= 0 && part <= 255 )) || return 1
+  done
+}
+
 is_valid_instance_name() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$ ]]
 }
@@ -1065,7 +1076,7 @@ validate_port() {
   local conflict_message=""
 
   is_valid_port "${candidate_port}" || {
-    printf '%s' "$(say "Invalid port." "端口不合法。")"
+    printf '%s' "$(say "Invalid port. Please enter an integer between 1 and 65535." "端口格式不正确，请输入 1 到 65535 之间的整数。")"
     return 1
   }
 
@@ -1080,10 +1091,20 @@ validate_port() {
   fi
 
   if [[ -n "${current_port}" && -n "${current_service_name}" && "${candidate_port}" == "${current_port}" ]] && service_running_by_name "${current_service_name}"; then
-    return 0
+    printf '%s' "$(say "Port ${candidate_port} is already in use by the current instance. Stop it first or choose another port." "端口 ${candidate_port} 当前已被本实例占用，请先停止实例或改用其他端口。")"
+    return 1
   fi
 
   printf '%s' "$(say "Port ${candidate_port} is already in use. Please choose another port." "端口 ${candidate_port} 已被占用，请改用其他端口。")"
+  return 1
+}
+
+validate_bind_ip() {
+  local candidate_ip="$1"
+
+  is_valid_bind_ip "${candidate_ip}" && return 0
+
+  printf '%s' "$(say "Invalid bind IP. Please enter a valid IPv4 address." "绑定 IP 格式不正确，请输入合法的 IPv4 地址。")"
   return 1
 }
 
@@ -1408,6 +1429,24 @@ prompt_for_service_name() {
   done
 }
 
+prompt_for_bind_ip() {
+  local prompt_en="$1"
+  local prompt_zh="$2"
+  local default_value="$3"
+  local candidate
+  local validation_error
+
+  while true; do
+    candidate="$(prompt_config_value "${prompt_en}" "${prompt_zh}" "${default_value}")"
+    validation_error="$(validate_bind_ip "${candidate}" || true)"
+    if [[ -z "${validation_error}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+    info "${validation_error}" "${validation_error}"
+  done
+}
+
 choose_service() {
   local answer
 
@@ -1551,11 +1590,7 @@ configure_instance() {
   current_service_name="$(service_registration_name "${service}" "${instance}" "${file}")"
 
   while true; do
-    host="$(prompt_config_value "Bind IP" "绑定 IP" "${host}")"
-    if [[ -z "${host}" ]]; then
-      info "IP must not be empty." "IP 不能为空。"
-      continue
-    fi
+    host="$(prompt_for_bind_ip "Bind IP" "绑定 IP" "${host}")"
 
     port="$(prompt_for_port "Port" "端口" "${port}" "${service}" "${instance}" "${port}" "${current_service_name}")"
 
@@ -1601,11 +1636,8 @@ initialize_installation() {
   choose_data_roots
 
   while true; do
-    host="$(prompt_config_value "Service bind IP" "服务绑定 IP" "127.0.0.1")"
-    if [[ -n "${host}" ]]; then
-      break
-    fi
-    info "IP must not be empty." "IP 不能为空。"
+    host="$(prompt_for_bind_ip "Service bind IP" "服务绑定 IP" "127.0.0.1")"
+    break
   done
 
   lancedb_port="$(prompt_for_port "LanceDB port" "LanceDB 端口" "$(default_port "vldb-lancedb")" "vldb-lancedb" "default")"
@@ -1663,11 +1695,7 @@ install_single_instance() {
   done
 
   while true; do
-    host="$(prompt_config_value "Bind IP" "绑定 IP" "127.0.0.1")"
-    if [[ -z "${host}" ]]; then
-      info "IP must not be empty." "IP 不能为空。"
-      continue
-    fi
+    host="$(prompt_for_bind_ip "Bind IP" "绑定 IP" "127.0.0.1")"
 
     port="$(prompt_for_port "Port" "端口" "$(default_port "${service}")" "${service}" "${instance}")"
 

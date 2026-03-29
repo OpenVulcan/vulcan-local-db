@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.13"
+$ScriptVersion = "0.1.14"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -335,6 +335,26 @@ function Test-ValidPort {
     return $port -ge 1 -and $port -le 65535
 }
 
+function Test-ValidBindIp {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    if ($Value -notmatch '^\d{1,3}(\.\d{1,3}){3}$') {
+        return $false
+    }
+
+    foreach ($segment in ($Value -split '\.')) {
+        if ([int]$segment -lt 0 -or [int]$segment -gt 255) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
 function Test-ValidInstanceName {
     param([string]$Value)
 
@@ -630,7 +650,7 @@ function Get-PortValidationError {
     )
 
     if (-not (Test-ValidPort $CandidatePort)) {
-        return "Invalid port."
+        return "Invalid port. Please enter an integer between 1 and 65535."
     }
 
     $port = [int]$CandidatePort
@@ -644,10 +664,20 @@ function Get-PortValidationError {
     }
 
     if ($CurrentPort -eq $port -and -not [string]::IsNullOrWhiteSpace($CurrentServiceName) -and (Test-ServiceRunningByName $CurrentServiceName)) {
-        return $null
+        return "Port $port is already in use by the current instance. Stop it first or choose another port."
     }
 
     return "Port $port is already in use. Please choose another port."
+}
+
+function Get-BindIpValidationError {
+    param([string]$CandidateIp)
+
+    if (Test-ValidBindIp $CandidateIp) {
+        return $null
+    }
+
+    return "Invalid bind IP. Please enter a valid IPv4 address."
 }
 
 function Is-Initialized {
@@ -1210,6 +1240,23 @@ function Prompt-ForPort {
     }
 }
 
+function Prompt-ForBindIp {
+    param(
+        [string]$PromptText,
+        [string]$DefaultValue
+    )
+
+    while ($true) {
+        $bindIp = Read-Default $PromptText $DefaultValue
+        $validationError = Get-BindIpValidationError -CandidateIp $bindIp
+        if (-not $validationError) {
+            return $bindIp
+        }
+
+        Write-Info $validationError
+    }
+}
+
 function Prompt-ForServiceName {
     param(
         [string]$Service,
@@ -1237,11 +1284,7 @@ function Initialize-Installation {
 
     Choose-DataRoots
 
-    $bindHost = Read-Default "Service bind IP" "127.0.0.1"
-    while ([string]::IsNullOrWhiteSpace($bindHost)) {
-        Write-Info "IP must not be empty."
-        $bindHost = Read-Default "Service bind IP" "127.0.0.1"
-    }
+    $bindHost = Prompt-ForBindIp -PromptText "Service bind IP" -DefaultValue "127.0.0.1"
 
     $lancePort = Prompt-ForPort -PromptText "LanceDB port" -DefaultPort (Get-DefaultPort "vldb-lancedb") -Service "vldb-lancedb" -Instance "default"
     while ($true) {
@@ -1284,11 +1327,7 @@ function Configure-Instance {
     $wasRegistered = Test-Registered -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName
 
     while ($true) {
-        $bindHost = Read-Default "Bind IP" ([string]$config.host)
-        if ([string]::IsNullOrWhiteSpace($bindHost)) {
-            Write-Info "IP must not be empty."
-            continue
-        }
+        $bindHost = Prompt-ForBindIp -PromptText "Bind IP" -DefaultValue ([string]$config.host)
 
         $port = Prompt-ForPort -PromptText "Port" -DefaultPort ([int]$config.port) -Service $meta.service -Instance $meta.instance -CurrentPort ([int]$config.port) -CurrentServiceName $currentServiceName
 
@@ -1332,11 +1371,7 @@ function Install-SingleInstance {
     }
 
     while ($true) {
-        $bindHost = Read-Default "Bind IP" "127.0.0.1"
-        if ([string]::IsNullOrWhiteSpace($bindHost)) {
-            Write-Info "IP must not be empty."
-            continue
-        }
+        $bindHost = Prompt-ForBindIp -PromptText "Bind IP" -DefaultValue "127.0.0.1"
 
         $port = Prompt-ForPort -PromptText "Port" -DefaultPort (Get-DefaultPort $service) -Service $service -Instance $instance
 
