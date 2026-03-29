@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.12"
+SCRIPT_VERSION="0.1.13"
 REPO_SLUG="OpenVulcan/vulcan-local-db"
 REPO_URL="https://github.com/OpenVulcan/vulcan-local-db"
 RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts"
@@ -713,7 +713,11 @@ install_global_launcher() {
   launcher_dir="$(dirname "${launcher_path}")"
 
   mkdir -p "${launcher_dir}"
-  ln -sfn "${INSTALL_DIR}/bin/vldb" "${launcher_path}"
+  cat >"${launcher_path}" <<EOF
+#!/usr/bin/env bash
+exec "${INSTALL_DIR}/bin/vldb" "\$@"
+EOF
+  chmod 755 "${launcher_path}"
 }
 
 ensure_profile_exports() {
