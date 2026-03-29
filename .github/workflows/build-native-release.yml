@@ -21,15 +21,12 @@ on:
           - "9950x"
           - "proart"
           - "ubuntu-24.04"
-  push:
-    tags:
-      - "v*"
 
 permissions:
   contents: write
 
 concurrency:
-  group: native-release-${{ github.ref }}
+  group: native-release-${{ github.workflow }}-${{ github.ref_name || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -42,7 +39,7 @@ jobs:
         include:
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.lancedb_linux_runner || 'ubuntu-24.04' }}
+            runner: ${{ github.event.inputs.lancedb_linux_runner || 'ubuntu-24.04' }}
             runner_mode: dynamic
             target: x86_64-unknown-linux-gnu
           - service: vldb-lancedb
@@ -67,7 +64,7 @@ jobs:
             target: x86_64-pc-windows-msvc
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.duckdb_linux_runner || 'ubuntu-24.04' }}
+            runner: ${{ github.event.inputs.duckdb_linux_runner || 'ubuntu-24.04' }}
             runner_mode: dynamic
             target: x86_64-unknown-linux-gnu
           - service: vldb-duckdb
@@ -140,18 +137,52 @@ jobs:
             choco install -y cmake protoc --no-progress
           }
 
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.94.0
-          targets: ${{ matrix.target }}
+      - name: Set up Rust toolchain on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install 1.94.0 --profile minimal
+          rustup default 1.94.0
+          rustup target add $env:TARGET
 
-      - name: Cache Rust build outputs
-        uses: Swatinem/rust-cache@v2
+      - name: Set up Rust toolchain on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.94.0 --profile minimal
+          rustup default 1.94.0
+          rustup target add "$TARGET"
+
+      - name: Cache Rust build outputs on Windows
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
         with:
-          workspaces: ${{ matrix.service }} -> target
-          cache-on-failure: true
-          key: ${{ matrix.service }}-${{ matrix.target }}-${{ hashFiles(format('{0}/Cargo.lock', matrix.service)) }}
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            ${{ matrix.service }}\target
+          key: native-release-${{ runner.os }}-${{ matrix.service }}-${{ matrix.target }}-${{ hashFiles(format('{0}/Cargo.lock', matrix.service)) }}
+          restore-keys: |
+            native-release-${{ runner.os }}-${{ matrix.service }}-${{ matrix.target }}-
+            native-release-${{ runner.os }}-${{ matrix.service }}-
+
+      - name: Cache Rust build outputs on Unix
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ matrix.service }}/target
+          key: native-release-${{ runner.os }}-${{ matrix.service }}-${{ matrix.target }}-${{ hashFiles(format('{0}/Cargo.lock', matrix.service)) }}
+          restore-keys: |
+            native-release-${{ runner.os }}-${{ matrix.service }}-${{ matrix.target }}-
+            native-release-${{ runner.os }}-${{ matrix.service }}-
 
       - name: Build release binary
         working-directory: ${{ matrix.service }}
@@ -325,23 +356,3 @@ PY
             dist/*.sha256
           if-no-files-found: error
           retention-days: 14
-
-  publish-release:
-    name: Publish GitHub Release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
-
-    steps:
-      - name: Download packaged binaries
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          merge-multiple: true
-
-      - name: Publish release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          files: release-assets/*
-          generate_release_notes: true
-          fail_on_unmatched_files: true
