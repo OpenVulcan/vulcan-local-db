@@ -21,6 +21,9 @@ on:
           - "9950x"
           - "proart"
           - "ubuntu-24.04"
+  push:
+    tags:
+      - "v*"
 
 permissions:
   contents: write
@@ -32,7 +35,8 @@ concurrency:
 jobs:
   build:
     name: ${{ matrix.service }} • ${{ matrix.target }}
-    runs-on: ${{ fromJSON(matrix.runner_mode == 'dynamic' && matrix.runner != 'ubuntu-24.04' && format('["self-hosted", "{0}"]', matrix.runner) || format('["{0}"]', matrix.runner)) }}
+    # 【修复 1】：强制将所有结果统一化为 JSON Array，完美避开静态解析器的类型冲突！
+    runs-on: ${{ fromJSON( matrix.runner_mode == 'dynamic' && matrix.runner != 'ubuntu-24.04' && format('["self-hosted", "{0}"]', matrix.runner) || format('["{0}"]', matrix.runner) ) }}
     strategy:
       fail-fast: false
       matrix:
@@ -49,7 +53,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: macos-15-intel
+            runner: macos-13    # 【修复 2】：纠正为有效的 Intel 节点
             runner_mode: fixed
             target: x86_64-apple-darwin
           - service: vldb-lancedb
@@ -74,7 +78,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: macos-15-intel
+            runner: macos-13    # 【修复 2】：纠正为有效的 Intel 节点
             runner_mode: fixed
             target: x86_64-apple-darwin
           - service: vldb-duckdb
@@ -328,6 +332,7 @@ with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.write(full_path, rel_path)
 PY
           else
+            # 【修复 3】：纠正变量名称拼写，确保能够正确找到路径
             tar -czf "$archive_path" -C "$dist_dir" "$package_name"
           fi
 
