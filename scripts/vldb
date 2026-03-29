@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.9"
+SCRIPT_VERSION="0.1.10"
 GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
@@ -21,6 +21,7 @@ FROM_INSTALLER=0
 INITIALIZED=0
 DEFAULT_LANCEDB_PORT="27301"
 DEFAULT_DUCKDB_PORT="23702"
+PROMPT_INPUT_FD=""
 
 if [[ "${1:-}" == "--from-installer" ]]; then
   FROM_INSTALLER=1
@@ -37,6 +38,32 @@ say() {
 
 line() {
   printf '%s\n' "$(say "$1" "$2")"
+}
+
+initialize_prompt_input() {
+  if [[ -n "${PROMPT_INPUT_FD}" ]]; then
+    return 0
+  fi
+
+  if [[ -r /dev/tty ]]; then
+    exec 3</dev/tty
+    PROMPT_INPUT_FD="3"
+  else
+    PROMPT_INPUT_FD="0"
+  fi
+}
+
+read_prompt_value() {
+  local prompt="$1"
+  local __resultvar="$2"
+
+  initialize_prompt_input
+  if [[ "${PROMPT_INPUT_FD}" == "3" ]]; then
+    printf '%s' "${prompt}" >/dev/tty
+    IFS= read -r -u 3 "${__resultvar}" || return 1
+  else
+    IFS= read -r -p "${prompt}" "${__resultvar}" || return 1
+  fi
 }
 
 supports_color() {
@@ -107,7 +134,7 @@ confirm_yes_no() {
   fi
 
   while true; do
-    read -r -p "$(say "$prompt_en [$normalized_default]: " "$prompt_zh [$normalized_default]: ")" answer
+    read_prompt_value "$(say "$prompt_en [$normalized_default]: " "$prompt_zh [$normalized_default]: ")" answer
     answer="${answer:-$normalized_default}"
     case "${answer}" in
       [Yy]) return 0 ;;
@@ -1338,7 +1365,7 @@ choose_service() {
   line "Select a service: 1) LanceDB  2) DuckDB" "选择服务：1) LanceDB  2) DuckDB"
   printf '%s\n' "$(say "0. Back" "0. 返回")"
   while true; do
-    read -r -p "$(say "Choice [1/2/0]: " "输入 [1/2/0]：")" answer
+    read_prompt_value "$(say "Choice [1/2/0]: " "输入 [1/2/0]：")" answer
     case "${answer}" in
       1) printf '%s' "vldb-lancedb"; return ;;
       2) printf '%s' "vldb-duckdb"; return ;;
@@ -1375,7 +1402,7 @@ choose_instance_file() {
   printf '%s\n' "$(say "0. Back" "0. 返回")"
 
   while true; do
-    read -r -p "$(say "Select instance: " "选择实例：")" answer
+    read_prompt_value "$(say "Select instance: " "选择实例：")" answer
     if [[ "${answer}" == "0" ]]; then
       return 1
     fi
@@ -1392,7 +1419,7 @@ switch_language() {
   printf '%s\n' "1. English"
   printf '%s\n' "2. 简体中文"
   printf '%s\n' "$(say "0. Back" "0. 返回")"
-  read -r -p "Select language [1/2/0]: " answer
+  read_prompt_value "Select language [1/2/0]: " answer
   case "${answer:-1}" in
     0) return 0 ;;
     2) LANG_CODE="zh-CN" ;;
@@ -1509,7 +1536,7 @@ prompt_config_value() {
   local default_value="$3"
   local answer
 
-  read -r -p "$(say "${prompt_en} [${default_value}]: " "${prompt_zh} [${default_value}]: ")" answer
+  read_prompt_value "$(say "${prompt_en} [${default_value}]: " "${prompt_zh} [${default_value}]: ")" answer
   printf '%s' "${answer:-${default_value}}"
 }
 
@@ -1891,7 +1918,7 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "$(say "Select an action: " "请选择操作：")" choice
+    read_prompt_value "$(say "Select an action: " "请选择操作：")" choice
     case "${choice}" in
       1) invoke_menu_action "Switching language" "切换语言" switch_language ;;
       2) invoke_menu_action "Checking for updates" "检查更新" check_updates ;;

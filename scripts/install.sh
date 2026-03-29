@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.9"
+SCRIPT_VERSION="0.1.10"
 REPO_SLUG="OpenVulcan/vulcan-local-db"
 REPO_URL="https://github.com/OpenVulcan/vulcan-local-db"
 RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts"
@@ -16,6 +16,7 @@ DUCKDB_ROOT="${GLOBAL_HOME}/duckdb"
 LATEST_RELEASE_JSON=""
 CONTROLLER_SCRIPT_VERSION="${SCRIPT_VERSION}"
 INITIALIZED=0
+PROMPT_INPUT_FD=""
 
 say() {
   if [[ "${LANG_CODE}" == "zh-CN" ]]; then
@@ -33,6 +34,32 @@ step() {
   line "[Step] $1" "[步骤] $2"
 }
 
+initialize_prompt_input() {
+  if [[ -n "${PROMPT_INPUT_FD}" ]]; then
+    return 0
+  fi
+
+  if [[ -r /dev/tty ]]; then
+    exec 3</dev/tty
+    PROMPT_INPUT_FD="3"
+  else
+    PROMPT_INPUT_FD="0"
+  fi
+}
+
+read_prompt_value() {
+  local prompt="$1"
+  local __resultvar="$2"
+
+  initialize_prompt_input
+  if [[ "${PROMPT_INPUT_FD}" == "3" ]]; then
+    printf '%s' "${prompt}" >/dev/tty
+    IFS= read -r -u 3 "${__resultvar}" || return 1
+  else
+    IFS= read -r -p "${prompt}" "${__resultvar}" || return 1
+  fi
+}
+
 show_banner() {
   printf '%s\n' "===================================="
   printf '%s\n' "       VulcanLocalDB Setup"
@@ -46,7 +73,7 @@ prompt_default() {
   local default_value="$3"
   local answer
 
-  read -r -p "$(say "$prompt_en [$default_value]: " "$prompt_zh [$default_value]: ")" answer
+  read_prompt_value "$(say "$prompt_en [$default_value]: " "$prompt_zh [$default_value]: ")" answer
   if [[ -z "$answer" ]]; then
     printf '%s' "$default_value"
   else
@@ -68,7 +95,7 @@ confirm_yes_no() {
   fi
 
   while true; do
-    read -r -p "$(say "$prompt_en [$normalized_default]: " "$prompt_zh [$normalized_default]: ")" answer
+    read_prompt_value "$(say "$prompt_en [$normalized_default]: " "$prompt_zh [$normalized_default]: ")" answer
     answer="${answer:-$normalized_default}"
     case "${answer}" in
       [Yy]) return 0 ;;
@@ -484,7 +511,7 @@ choose_language() {
   printf '%s\n' "2. 简体中文"
 
   local answer
-  read -r -p "Select language / 选择语言 [1]: " answer
+  read_prompt_value "Select language / 选择语言 [1]: " answer
 
   case "${answer:-1}" in
     2) LANG_CODE="zh-CN" ;;
