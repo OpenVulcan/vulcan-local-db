@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.14"
+SCRIPT_VERSION="0.1.15"
 GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
@@ -37,7 +37,7 @@ say() {
 }
 
 line() {
-  printf '%s\n' "$(say "$1" "$2")"
+  terminal_line "$(say "$1" "$2")"
 }
 
 initialize_prompt_input() {
@@ -116,7 +116,12 @@ remove_global_launcher() {
 }
 
 supports_color() {
-  [[ -t 1 ]] || return 1
+  initialize_prompt_input
+  if [[ "${PROMPT_INPUT_FD}" == "3" ]]; then
+    [[ -t 3 ]] || return 1
+  else
+    [[ -t 2 ]] || return 1
+  fi
   [[ -n "${TERM:-}" && "${TERM}" != "dumb" ]]
 }
 
@@ -124,10 +129,19 @@ write_color_line() {
   local color_code="$1"
   local message="$2"
 
+  initialize_prompt_input
   if supports_color; then
-    printf '\033[%sm%s\033[0m\n' "${color_code}" "${message}"
+    if [[ "${PROMPT_INPUT_FD}" == "3" ]]; then
+      printf '\033[%sm%s\033[0m\n' "${color_code}" "${message}" >&3
+    else
+      printf '\033[%sm%s\033[0m\n' "${color_code}" "${message}" >&2
+    fi
   else
-    printf '%s\n' "${message}"
+    if [[ "${PROMPT_INPUT_FD}" == "3" ]]; then
+      printf '%s\n' "${message}" >&3
+    else
+      printf '%s\n' "${message}" >&2
+    fi
   fi
 }
 
@@ -760,8 +774,21 @@ write_service_config() {
   local data_path="$5"
   local service_name="$6"
   local config_path
+  local validation_error
 
   config_path="$(instance_config_path "${service}" "${instance}")"
+
+  validation_error="$(validate_bind_ip "${host}" || true)"
+  if [[ -n "${validation_error}" ]]; then
+    warn "${validation_error}" "${validation_error}"
+    return 1
+  fi
+
+  validation_error="$(validate_port "${port}" "${service}" "${instance}" || true)"
+  if [[ -n "${validation_error}" ]]; then
+    warn "${validation_error}" "${validation_error}"
+    return 1
+  fi
 
   mkdir -p "${INSTALL_DIR}/config"
   if [[ "${service}" == "vldb-lancedb" ]]; then
@@ -976,7 +1003,7 @@ port_conflict_message() {
 
     existing_port="$(config_port "${file}")"
     if [[ -n "${existing_port}" && "${existing_port}" == "${candidate_port}" ]]; then
-      printf '%s' "$(say "Port ${candidate_port} conflicts with ${PARSED_SERVICE}/${PARSED_INSTANCE}." "端口 ${candidate_port} 与 ${PARSED_SERVICE}/${PARSED_INSTANCE} 冲突。")"
+      printf '%s' "$(say "Port ${candidate_port} is already reserved by ${PARSED_SERVICE}/${PARSED_INSTANCE}. Please choose another port." "端口 ${candidate_port} 已被 ${PARSED_SERVICE}/${PARSED_INSTANCE} 使用，请更换端口。")"
       return 0
     fi
   done < <(list_config_files)
@@ -1095,7 +1122,7 @@ validate_port() {
     return 1
   fi
 
-  printf '%s' "$(say "Port ${candidate_port} is already in use. Please choose another port." "端口 ${candidate_port} 已被占用，请改用其他端口。")"
+  printf '%s' "$(say "Port ${candidate_port} is already in use by another service, container, or process. Please choose another port." "端口 ${candidate_port} 已被其他容器、服务或进程占用，请更换端口。")"
   return 1
 }
 
@@ -1609,7 +1636,7 @@ configure_instance() {
     unregister_instance "${service}" "${instance}" "${current_service_name}"
   fi
 
-  write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}" "${service_name}"
+  write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}" "${service_name}" || return 1
   register_instance "${service}" "${instance}"
   write_global_config
 }
@@ -1658,8 +1685,8 @@ initialize_installation() {
 
   install_service_binary "vldb-lancedb" "${INSTALL_TAG}"
   install_service_binary "vldb-duckdb" "${INSTALL_TAG}"
-  write_service_config "vldb-lancedb" "default" "${host}" "${lancedb_port}" "$(default_instance_data_path "vldb-lancedb" "default")" "${lancedb_service_name}"
-  write_service_config "vldb-duckdb" "default" "${host}" "${duckdb_port}" "$(default_instance_data_path "vldb-duckdb" "default")" "${duckdb_service_name}"
+  write_service_config "vldb-lancedb" "default" "${host}" "${lancedb_port}" "$(default_instance_data_path "vldb-lancedb" "default")" "${lancedb_service_name}" || return 1
+  write_service_config "vldb-duckdb" "default" "${host}" "${duckdb_port}" "$(default_instance_data_path "vldb-duckdb" "default")" "${duckdb_service_name}" || return 1
   register_instance "vldb-lancedb" "default"
   register_instance "vldb-duckdb" "default"
 
@@ -1711,7 +1738,7 @@ install_single_instance() {
     break
   done
 
-  write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}" "${service_name}"
+  write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}" "${service_name}" || return 1
   register_instance "${service}" "${instance}"
   INITIALIZED=1
   write_global_config

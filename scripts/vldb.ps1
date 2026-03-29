@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.14"
+$ScriptVersion = "0.1.15"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -633,7 +633,7 @@ function Get-PortConflictMessage {
 
         $existingPort = Get-ConfigPort $file.FullName
         if ($null -ne $existingPort -and [int]$existingPort -eq $CandidatePort) {
-            return "Port $CandidatePort conflicts with $($meta.service)/$($meta.instance)."
+            return "Port $CandidatePort is already reserved by $($meta.service)/$($meta.instance). Please choose another port."
         }
     }
 
@@ -667,7 +667,7 @@ function Get-PortValidationError {
         return "Port $port is already in use by the current instance. Stop it first or choose another port."
     }
 
-    return "Port $port is already in use. Please choose another port."
+    return "Port $port is already in use by another service, container, or process. Please choose another port."
 }
 
 function Get-BindIpValidationError {
@@ -1117,6 +1117,14 @@ function Write-ServiceConfig {
         [string]$DataPath,
         [string]$ServiceName
     )
+
+    if (-not (Test-ValidBindIp $BindHost)) {
+        throw "Invalid bind IP. Please enter a valid IPv4 address."
+    }
+
+    if (-not (Test-ValidPort ([string]$Port))) {
+        throw "Invalid port. Please enter an integer between 1 and 65535."
+    }
 
     $configDir = Join-Path $script:InstallDir "config"
     New-Item -ItemType Directory -Force -Path $configDir | Out-Null
