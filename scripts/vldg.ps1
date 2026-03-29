@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.2"
+$ScriptVersion = "0.1.3"
 $GlobalHome = Join-Path $HOME ".vulcan\vldg"
 $GlobalConfig = Join-Path $GlobalHome "config.json"
 $RunDir = Join-Path $GlobalHome "run"
@@ -628,6 +628,12 @@ function Remove-LauncherOnly {
     }
     [Environment]::SetEnvironmentVariable("Path", $updated, "User")
     [Environment]::SetEnvironmentVariable("VULCANLOCALDB_HOME", $null, "User")
+    [Environment]::SetEnvironmentVariable("VULCANLOCALDB_BIN", $null, "User")
+    if ($env:Path) {
+        $env:Path = (($env:Path.Split(";") | Where-Object { $_ -and $_ -ne $binDir }) -join ";")
+    }
+    $env:VULCANLOCALDB_HOME = $null
+    $env:VULCANLOCALDB_BIN = $null
     Remove-Item $launcherFiles -Force -ErrorAction SilentlyContinue
     Start-DeferredCleanup -Paths $launcherFiles
     Write-Info "The vldg launcher has been removed from future sessions. Close this shell after you finish."

@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.2"
+$ScriptVersion = "0.1.3"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -444,6 +444,12 @@ function Ensure-PathExports {
     }
 
     [Environment]::SetEnvironmentVariable("VULCANLOCALDB_HOME", $script:InstallDir, "User")
+    [Environment]::SetEnvironmentVariable("VULCANLOCALDB_BIN", $binDir, "User")
+    $env:VULCANLOCALDB_HOME = $script:InstallDir
+    $env:VULCANLOCALDB_BIN = $binDir
+    if (($env:Path -split ";") -notcontains $binDir) {
+        $env:Path = $binDir + ";" + $env:Path
+    }
 }
 
 function Get-ServiceName {
