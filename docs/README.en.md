@@ -1,6 +1,6 @@
 # Documentation Index
 
-This folder contains the detailed usage guides for VulcanLocalDb.
+This folder contains the detailed usage guides for VulcanLocalDB.
 
 ## Start Here
 

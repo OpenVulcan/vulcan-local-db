@@ -1,8 +1,8 @@
-# VulcanLocalDb
+# VulcanLocalDB
 
 [English](./README.md) | 简体中文
 
-`VulcanLocalDb` 是一个面向本地部署场景的数据网关工作区，适合应用程序和 AI Agent 在不依赖远程中心化服务的情况下，统一访问本地向量数据与本地 SQL 数据。仓库当前包含两个 Rust gRPC 服务：
+`VulcanLocalDB` 是一个面向本地部署场景的数据网关工作区，适合应用程序和 AI Agent 在不依赖远程中心化服务的情况下，统一访问本地向量数据与本地 SQL 数据。仓库当前包含两个 Rust gRPC 服务：
 
 - `vldb-lancedb`：基于 LanceDB 的向量数据网关
 - `vldb-duckdb`：基于 DuckDB 的 SQL 与分析数据网关

@@ -2,7 +2,7 @@
 
 ## Overview
 
-If you prefer to run VulcanLocalDb without Docker, use the prebuilt release archives published on GitHub Releases:
+If you prefer to run VulcanLocalDB without Docker, use the prebuilt release archives published on GitHub Releases:
 
 - [OpenVulcan/vulcan-local-db Releases](https://github.com/OpenVulcan/vulcan-local-db/releases)
 

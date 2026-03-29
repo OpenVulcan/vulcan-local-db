@@ -1,6 +1,6 @@
 # 文档索引
 
-这个目录用于存放 VulcanLocalDb 的详细使用说明。
+这个目录用于存放 VulcanLocalDB 的详细使用说明。
 
 ## 从这里开始
 

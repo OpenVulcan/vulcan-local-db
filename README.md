@@ -1,8 +1,8 @@
-# VulcanLocalDb
+# VulcanLocalDB
 
 English | [简体中文](./README.zh-CN.md)
 
-VulcanLocalDb is a local-first data gateway workspace for applications and AI agents that need fast, structured access to private data without pushing everything into a remote service. It packages two Rust gRPC services:
+VulcanLocalDB is a local-first data gateway workspace for applications and AI agents that need fast, structured access to private data without pushing everything into a remote service. It packages two Rust gRPC services:
 
 - `vldb-lancedb`: a vector data gateway built on LanceDB
 - `vldb-duckdb`: a SQL and analytics gateway built on DuckDB
