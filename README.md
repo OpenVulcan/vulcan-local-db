@@ -47,22 +47,22 @@ docker pull openvulcan/vldb-duckdb:latest
 docker run -d \
   --name vldb-lancedb \
   --restart unless-stopped \
-  -p 50051:50051 \
+  -p 27301:27301 \
   -v vldb-lancedb-data:/app/data \
   openvulcan/vldb-lancedb:latest
 
 docker run -d \
   --name vldb-duckdb \
   --restart unless-stopped \
-  -p 50052:50052 \
+  -p 23702:23702 \
   -v vldb-duckdb-data:/app/data \
   openvulcan/vldb-duckdb:latest
 ```
 
 Default endpoints:
 
-- `vldb-lancedb`: `127.0.0.1:50051`
-- `vldb-duckdb`: `127.0.0.1:50052`
+- `vldb-lancedb`: `127.0.0.1:27301`
+- `vldb-duckdb`: `127.0.0.1:23702`
 
 Detailed Docker install guides:
 

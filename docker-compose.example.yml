@@ -8,7 +8,7 @@ services:
     image: vulcan/vldb-lancedb:local
     container_name: vldb-lancedb
     ports:
-      - "50051:50051"
+      - "27301:27301"
     volumes:
       - vldb-lancedb-data:/app/data
       - ./vldb-lancedb/docker/vldb-lancedb.json:/app/config/vldb-lancedb.json:ro
@@ -21,7 +21,7 @@ services:
     image: vulcan/vldb-duckdb:local
     container_name: vldb-duckdb
     ports:
-      - "50052:50052"
+      - "23702:23702"
     volumes:
       - vldb-duckdb-data:/app/data
       - ./vldb-duckdb/docker/vldb-duckdb.json:/app/config/vldb-duckdb.json:ro

@@ -4,20 +4,21 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.6"
-$GlobalHome = Join-Path $HOME ".vulcan\vldb"
-$GlobalConfig = Join-Path $GlobalHome "config.json"
-$RunDir = Join-Path $GlobalHome "run"
-$LanceDbRoot = Join-Path $GlobalHome "lancedb"
-$DuckDbRoot = Join-Path $GlobalHome "duckdb"
-$InstallDir = $null
+$ScriptVersion = "0.1.7"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
+$GlobalHome = Join-Path $HOME ".vulcan\vldb"
+$GlobalConfig = Join-Path $GlobalHome "config.json"
+$RunDir = Join-Path $GlobalHome "run"
+$InstallDir = $null
 $ReleaseTag = $null
-$LatestRelease = $null
 $InstalledScriptVersion = $ScriptVersion
+$Initialized = $false
+$LanceDbRoot = Join-Path $GlobalHome "lancedb"
+$DuckDbRoot = Join-Path $GlobalHome "duckdb"
 $WinSWVersion = "v2.12.0"
+$LatestRelease = $null
 
 try {
     [Net.ServicePointManager]::SecurityProtocol = `
@@ -30,6 +31,117 @@ try {
 function Write-Info {
     param([string]$Message)
     Write-Host $Message
+}
+
+function Write-Step {
+    param([string]$Message)
+    Write-Host ("[Step] " + $Message)
+}
+
+function Confirm-Choice {
+    param([string]$PromptText, [string]$DefaultValue = "Y")
+
+    while ($true) {
+        $prompt = "$PromptText [$DefaultValue]"
+        $value = Read-Host $prompt
+        if ([string]::IsNullOrWhiteSpace($value)) { $value = $DefaultValue }
+
+        switch -Regex ($value) {
+            "^[Yy]$" { return $true }
+            "^[Nn]$" { return $false }
+            default { Write-Info "Please input Y or N." }
+        }
+    }
+}
+
+function Read-Default {
+    param([string]$PromptText, [string]$DefaultValue)
+
+    $prompt = "$PromptText [$DefaultValue]"
+    $value = Read-Host $prompt
+    if ([string]::IsNullOrWhiteSpace($value)) { return $DefaultValue }
+    return $value
+}
+
+function Normalize-Version {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+
+    $normalized = $Value.Trim()
+    if ($normalized.StartsWith("v")) {
+        $normalized = $normalized.Substring(1)
+    }
+
+    return $normalized
+}
+
+function Compare-VersionStrings {
+    param([string]$Left, [string]$Right)
+
+    $leftValue = Normalize-Version $Left
+    $rightValue = Normalize-Version $Right
+
+    if (-not $leftValue -and -not $rightValue) { return 0 }
+    if (-not $leftValue) { return -1 }
+    if (-not $rightValue) { return 1 }
+
+    try {
+        return ([version]$leftValue).CompareTo([version]$rightValue)
+    } catch {
+        return 0
+    }
+}
+
+function Read-Config {
+    if (-not (Test-Path $script:GlobalConfig)) {
+        return $null
+    }
+
+    try {
+        return Get-Content $script:GlobalConfig -Raw | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+}
+
+function Resolve-InstallDir {
+    $config = Read-Config
+
+    if ($config -and $config.install_dir) {
+        $script:InstallDir = [string]$config.install_dir
+    } else {
+        $script:InstallDir = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+    }
+
+    if ($config -and $config.release_tag) {
+        $script:ReleaseTag = [string]$config.release_tag
+    }
+    if ($config -and $config.script_version) {
+        $script:InstalledScriptVersion = [string]$config.script_version
+    }
+    if ($config -and $config.lancedb_root) {
+        $script:LanceDbRoot = [string]$config.lancedb_root
+    }
+    if ($config -and $config.duckdb_root) {
+        $script:DuckDbRoot = [string]$config.duckdb_root
+    }
+    if ($config -and $null -ne $config.initialized) {
+        $script:Initialized = [bool]$config.initialized
+    }
+}
+
+function Write-Config {
+    New-Item -ItemType Directory -Force -Path $script:GlobalHome | Out-Null
+    @{
+        language = "en"
+        install_dir = $script:InstallDir
+        release_tag = $script:ReleaseTag
+        script_version = $script:InstalledScriptVersion
+        lancedb_root = $script:LanceDbRoot
+        duckdb_root = $script:DuckDbRoot
+        initialized = $script:Initialized
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $script:GlobalConfig
 }
 
 function Refresh-CurrentSessionEnvironment {
@@ -84,60 +196,18 @@ function Start-DeferredCleanup {
     Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cleanupCommand -WindowStyle Hidden | Out-Null
 }
 
-function Confirm-Choice {
-    param([string]$PromptText, [string]$DefaultValue = "Y")
-    while ($true) {
-        $prompt = "$PromptText [$DefaultValue]"
-        $value = Read-Host $prompt
-        if ([string]::IsNullOrWhiteSpace($value)) { $value = $DefaultValue }
-        switch -Regex ($value) {
-            "^[Yy]$" { return $true }
-            "^[Nn]$" { return $false }
-            default { Write-Info "Please input Y or N." }
-        }
-    }
-}
+function Ensure-CmdLauncher {
+    $binDir = Join-Path $script:InstallDir "bin"
+    $cmdPath = Join-Path $binDir "vldb.cmd"
 
-function Read-Config {
-    if (Test-Path $script:GlobalConfig) {
-        return Get-Content $script:GlobalConfig -Raw | ConvertFrom-Json
-    }
-    return $null
-}
-
-function Write-Config {
-    New-Item -ItemType Directory -Force -Path $script:GlobalHome | Out-Null
-    @{
-        language = "en"
-        install_dir = $script:InstallDir
-        release_tag = $script:ReleaseTag
-        script_version = $ScriptVersion
-        lancedb_root = $script:LanceDbRoot
-        duckdb_root = $script:DuckDbRoot
-    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $script:GlobalConfig
-    $script:InstalledScriptVersion = $ScriptVersion
-}
-
-function Resolve-InstallDir {
-    $config = Read-Config
-    if ($config -and $config.install_dir) {
-        $script:InstallDir = $config.install_dir
-    } else {
-        $script:InstallDir = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+    if (-not (Test-Path $binDir)) {
+        return
     }
 
-    if ($config -and $config.release_tag) {
-        $script:ReleaseTag = $config.release_tag
-    }
-    if ($config -and $config.script_version) {
-        $script:InstalledScriptVersion = $config.script_version
-    }
-    if ($config -and $config.lancedb_root) {
-        $script:LanceDbRoot = $config.lancedb_root
-    }
-    if ($config -and $config.duckdb_root) {
-        $script:DuckDbRoot = $config.duckdb_root
-    }
+    @"
+@echo off
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0vldb.ps1" %*
+"@ | Set-Content -Encoding ASCII $cmdPath
 }
 
 function Get-DefaultDataRoot {
@@ -146,7 +216,23 @@ function Get-DefaultDataRoot {
     if ($Service -eq "vldb-lancedb") {
         return (Join-Path $script:GlobalHome "lancedb")
     }
+
     return (Join-Path $script:GlobalHome "duckdb")
+}
+
+function Get-DefaultPort {
+    param([string]$Service)
+
+    if ($Service -eq "vldb-lancedb") {
+        return 27301
+    }
+
+    return 23702
+}
+
+function Get-LegacyServiceName {
+    param([string]$Service, [string]$Instance)
+    return "VulcanLocalDB-$Service-$Instance"
 }
 
 function Get-DefaultInstanceDataPath {
@@ -160,6 +246,7 @@ function Get-DefaultInstanceDataPath {
     if ($Service -eq "vldb-lancedb") {
         return (Join-Path $LanceRoot $Instance)
     }
+
     return (Join-Path (Join-Path $DuckRoot $Instance) "duckdb.db")
 }
 
@@ -170,6 +257,7 @@ function Resolve-NormalizedPath {
     if ($fullPath.Length -gt 3) {
         $fullPath = $fullPath.TrimEnd('\', '/')
     }
+
     return $fullPath
 }
 
@@ -191,196 +279,179 @@ function Test-PathsOverlap {
         $leftNormalized.StartsWith($rightPrefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
-function Normalize-Version {
+function Test-ValidPort {
     param([string]$Value)
-    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
-    $normalized = $Value.Trim()
-    if ($normalized.StartsWith("v")) {
-        $normalized = $normalized.Substring(1)
-    }
-    return $normalized
+
+    if ($Value -notmatch '^\d+$') { return $false }
+    $port = [int]$Value
+    return $port -ge 1 -and $port -le 65535
 }
 
-function Compare-VersionStrings {
-    param([string]$Left, [string]$Right)
+function Test-ValidInstanceName {
+    param([string]$Value)
 
-    $leftValue = Normalize-Version $Left
-    $rightValue = Normalize-Version $Right
-
-    if (-not $leftValue -and -not $rightValue) { return 0 }
-    if (-not $leftValue) { return -1 }
-    if (-not $rightValue) { return 1 }
-
-    try {
-        return ([version]$leftValue).CompareTo([version]$rightValue)
-    } catch {
-        return 0
-    }
+    return $Value -match '^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$'
 }
 
-function Get-LatestRelease {
-    if ($script:ReleaseTag) {
-        try {
-            $script:LatestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/releases/tags/$ReleaseTag"
-            return $script:LatestRelease
-        } catch {
-        }
-    }
+function Test-ValidServiceName {
+    param([string]$Value)
 
-    $script:LatestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/releases/latest"
-    $script:ReleaseTag = $script:LatestRelease.tag_name
-    return $script:LatestRelease
-}
-
-function Invoke-TextDownload {
-    param([string]$Url)
-    try {
-        return (Invoke-WebRequest -UseBasicParsing -Uri $Url).Content
-    } catch {
-        return $null
-    }
-}
-
-function Get-RemoteScriptVersion {
-    param([string]$ScriptName)
-
-    $content = Invoke-TextDownload "$RawBaseUrl/$ScriptName"
-    if (-not $content) { return $null }
-    $match = [regex]::Match($content, '\$ScriptVersion\s*=\s*"([^"]+)"')
-    if ($match.Success) {
-        return $match.Groups[1].Value
-    }
-    return $null
-}
-
-function Check-Updates {
-    Write-Info "Checking for updates..."
-
-    $remoteScriptVersion = Get-RemoteScriptVersion -ScriptName "vldb.ps1"
-    $latestTag = $null
-    try {
-        $latestTag = (Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/releases/latest").tag_name
-    } catch {
-    }
-
-    Write-Info "Current manager script version: $ScriptVersion"
-    if ($remoteScriptVersion) {
-        Write-Info "Latest manager script version: $remoteScriptVersion"
-        if ((Compare-VersionStrings $remoteScriptVersion $ScriptVersion) -gt 0) {
-            Write-Info "Manager script update available."
-        } else {
-            Write-Info "Manager script is up to date."
-        }
-    } else {
-        Write-Info "Latest manager script version: unavailable"
-    }
-
-    if ($script:ReleaseTag) {
-        Write-Info "Installed release tag: $($script:ReleaseTag)"
-    } else {
-        Write-Info "Installed release tag: not set"
-    }
-
-    if ($latestTag) {
-        Write-Info "Latest release tag: $latestTag"
-        if (-not $script:ReleaseTag) {
-            Write-Info "No release tag is stored locally yet."
-        } elseif ((Compare-VersionStrings $latestTag $script:ReleaseTag) -gt 0) {
-            Write-Info "A newer binary release is available."
-        } else {
-            Write-Info "Binary release is up to date."
-        }
-    } else {
-        Write-Info "Latest release tag: unavailable"
-    }
-}
-
-function Download-FileWithProgress {
-    param(
-        [string]$Url,
-        [string]$OutFile,
-        [string]$Label
-    )
-
-    Write-Info "Downloading $Label"
-    Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $OutFile
-}
-
-function Get-TargetTriple {
-    $arch = $env:PROCESSOR_ARCHITECTURE
-    switch ($arch) {
-        "AMD64" { return "x86_64-pc-windows-msvc" }
-        "ARM64" { return "aarch64-pc-windows-msvc" }
-        default { throw "Unsupported Windows CPU architecture." }
-    }
-}
-
-function Ensure-ServiceBinaryInstalled {
-    param([string]$Service)
-
-    $binaryPath = Join-Path $script:InstallDir "bin\$Service.exe"
-    if (Test-Path $binaryPath) {
-        return
-    }
-
-    $release = Get-LatestRelease
-    $target = Get-TargetTriple
-    $archiveName = "$Service-$($script:ReleaseTag)-$target.zip"
-    $checksumName = "$archiveName.sha256"
-    if ($release.assets.name -notcontains $archiveName) {
-        throw "The current release does not provide $archiveName."
-    }
-
-    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("vulcanlocaldb-" + [guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
-
-    try {
-        $archivePath = Join-Path $tempDir $archiveName
-        $checksumPath = Join-Path $tempDir $checksumName
-        $baseUrl = "$RepoUrl/releases/download/$($script:ReleaseTag)"
-
-        Download-FileWithProgress -Url "$baseUrl/$archiveName" -OutFile $archivePath -Label $archiveName
-        Download-FileWithProgress -Url "$baseUrl/$checksumName" -OutFile $checksumPath -Label $checksumName
-
-        $expected = (Get-Content $checksumPath -Raw).Split(" ")[0].Trim().ToLowerInvariant()
-        $actual = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
-        if ($expected -ne $actual) {
-            throw "Checksum verification failed for $archiveName."
-        }
-
-        $extractDir = Join-Path $tempDir "extract-$Service"
-        Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
-        $binary = Get-ChildItem -Path $extractDir -Recurse -File -Filter "$Service.exe" | Select-Object -First 1
-        $example = Get-ChildItem -Path $extractDir -Recurse -File -Filter "$Service.json.example" | Select-Object -First 1
-
-        if (-not $binary -or -not $example) {
-            throw "The archive layout is missing the expected binary or example config."
-        }
-
-        New-Item -ItemType Directory -Force -Path (Join-Path $script:InstallDir "bin"), (Join-Path $script:InstallDir "share\examples") | Out-Null
-        Copy-Item $binary.FullName $binaryPath -Force
-        Copy-Item $example.FullName (Join-Path $script:InstallDir "share\examples\$Service.json.example") -Force
-    } finally {
-        Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
-    }
+    return $Value -match '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 }
 
 function Get-InstanceFiles {
     $configDir = Join-Path $script:InstallDir "config"
     if (-not (Test-Path $configDir)) { return @() }
+
     return Get-ChildItem -Path $configDir -File | Where-Object {
         $_.Name -like "vldb-lancedb-*.json" -or $_.Name -like "vldb-duckdb-*.json"
     } | Sort-Object Name
 }
 
-function Get-ConfigDbPath {
+function Get-InstanceMeta {
+    param([System.IO.FileInfo]$File)
+
+    $parts = $File.BaseName -split "-"
+    $service = ($parts[0..1] -join "-")
+    $instance = ($parts[2..($parts.Length - 1)] -join "-")
+    return @{ service = $service; instance = $instance }
+}
+
+function Get-InstanceConfigPath {
+    param([string]$Service, [string]$Instance)
+    return (Join-Path $script:InstallDir "config\$Service-$Instance.json")
+}
+
+function Read-InstanceConfig {
     param([string]$Path)
 
     if (-not (Test-Path $Path)) { return $null }
+
     try {
-        return (Get-Content $Path -Raw | ConvertFrom-Json).db_path
+        return Get-Content $Path -Raw | ConvertFrom-Json
     } catch {
         return $null
+    }
+}
+
+function Get-ServiceRegistrationName {
+    param(
+        [string]$Service,
+        [string]$Instance,
+        [string]$ConfigPath = $null
+    )
+
+    $path = $ConfigPath
+    if (-not $path) {
+        $path = Get-InstanceConfigPath -Service $Service -Instance $Instance
+    }
+
+    $config = Read-InstanceConfig $path
+    if ($config -and $config.service_name) {
+        return [string]$config.service_name
+    }
+
+    return (Get-LegacyServiceName -Service $Service -Instance $Instance)
+}
+
+function Get-ConfigDbPath {
+    param([string]$Path)
+
+    $config = Read-InstanceConfig $Path
+    if ($config -and $config.db_path) {
+        return [string]$config.db_path
+    }
+
+    return $null
+}
+
+function Get-ConfigPort {
+    param([string]$Path)
+
+    $config = Read-InstanceConfig $Path
+    if ($config -and $config.port) {
+        return [int]$config.port
+    }
+
+    return $null
+}
+
+function Get-ServiceNameConflictMessage {
+    param(
+        [string]$CandidateName,
+        [string]$Service,
+        [string]$Instance
+    )
+
+    foreach ($file in Get-InstanceFiles) {
+        $meta = Get-InstanceMeta $file
+        if ($meta.service -eq $Service -and $meta.instance -eq $Instance) {
+            continue
+        }
+
+        $existingName = Get-ServiceRegistrationName -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName
+        if ([string]::Equals($existingName, $CandidateName, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return "Service name conflicts with $($meta.service)/$($meta.instance): $existingName"
+        }
+    }
+
+    return $null
+}
+
+function Get-ServiceNameValidationError {
+    param(
+        [string]$CandidateName,
+        [string]$Service,
+        [string]$Instance,
+        [string]$CurrentName = $null
+    )
+
+    if (-not (Test-ValidServiceName $CandidateName)) {
+        return "Service names may contain letters, numbers, dot, dash, and underscore."
+    }
+
+    $conflict = Get-ServiceNameConflictMessage -CandidateName $CandidateName -Service $Service -Instance $Instance
+    if ($conflict) {
+        return $conflict
+    }
+
+    $existingService = Get-Service -Name $CandidateName -ErrorAction SilentlyContinue
+    if ($existingService -and -not [string]::Equals($CandidateName, $CurrentName, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return "A Windows service named '$CandidateName' already exists."
+    }
+
+    return $null
+}
+
+function New-UniqueServiceName {
+    param(
+        [string]$Service,
+        [string]$Instance,
+        [string]$PreferredName = $null,
+        [string]$CurrentName = $null
+    )
+
+    $baseName = if ([string]::IsNullOrWhiteSpace($PreferredName)) {
+        Get-LegacyServiceName -Service $Service -Instance $Instance
+    } else {
+        $PreferredName
+    }
+
+    $candidate = $baseName
+    $suffix = 2
+
+    while ($true) {
+        $validationError = Get-ServiceNameValidationError -CandidateName $candidate -Service $Service -Instance $Instance -CurrentName $CurrentName
+        if (-not $validationError) {
+            return $candidate
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($CurrentName) -and [string]::Equals($candidate, $CurrentName, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $candidate
+        }
+
+        $candidate = "$baseName-$suffix"
+        $suffix += 1
     }
 }
 
@@ -439,6 +510,95 @@ function Get-DataPathValidationError {
     return $null
 }
 
+function Test-PortAvailable {
+    param([int]$Port)
+
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $Port)
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($listener) {
+            $listener.Stop()
+        }
+    }
+}
+
+function Test-RegisteredByName {
+    param([string]$ServiceName)
+    return $null -ne (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)
+}
+
+function Test-ServiceRunningByName {
+    param([string]$ServiceName)
+
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    return $service -and $service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running
+}
+
+function Get-PortConflictMessage {
+    param(
+        [int]$CandidatePort,
+        [string]$Service,
+        [string]$Instance
+    )
+
+    foreach ($file in Get-InstanceFiles) {
+        $meta = Get-InstanceMeta $file
+        if ($meta.service -eq $Service -and $meta.instance -eq $Instance) {
+            continue
+        }
+
+        $existingPort = Get-ConfigPort $file.FullName
+        if ($null -ne $existingPort -and [int]$existingPort -eq $CandidatePort) {
+            return "Port $CandidatePort conflicts with $($meta.service)/$($meta.instance)."
+        }
+    }
+
+    return $null
+}
+
+function Get-PortValidationError {
+    param(
+        [string]$CandidatePort,
+        [string]$Service,
+        [string]$Instance,
+        [int]$CurrentPort = 0,
+        [string]$CurrentServiceName = $null
+    )
+
+    if (-not (Test-ValidPort $CandidatePort)) {
+        return "Invalid port."
+    }
+
+    $port = [int]$CandidatePort
+    $conflict = Get-PortConflictMessage -CandidatePort $port -Service $Service -Instance $Instance
+    if ($conflict) {
+        return $conflict
+    }
+
+    if (Test-PortAvailable $port) {
+        return $null
+    }
+
+    if ($CurrentPort -eq $port -and -not [string]::IsNullOrWhiteSpace($CurrentServiceName) -and (Test-ServiceRunningByName $CurrentServiceName)) {
+        return $null
+    }
+
+    return "Port $port is already in use. Please choose another port."
+}
+
+function Is-Initialized {
+    if ($script:Initialized) {
+        return $true
+    }
+
+    return (Get-InstanceFiles).Count -gt 0
+}
+
 function Choose-Service {
     while ($true) {
         Write-Host "1. LanceDB"
@@ -453,76 +613,199 @@ function Choose-Service {
 }
 
 function Choose-InstanceFile {
-    param([string]$ServiceFilter = "")
-
     $files = Get-InstanceFiles
-    if ($ServiceFilter) {
-        $files = $files | Where-Object { $_.BaseName -like "$ServiceFilter-*" }
-    }
     if (-not $files -or $files.Count -eq 0) {
         Write-Info "No installed instances were found."
         return $null
     }
 
-    for ($i = 0; $i -lt $files.Count; $i++) {
-        Write-Host ("{0}. {1}" -f ($i + 1), $files[$i].BaseName)
+    for ($index = 0; $index -lt $files.Count; $index++) {
+        Write-Host ("{0}. {1}" -f ($index + 1), $files[$index].BaseName)
     }
 
     while ($true) {
         $choice = Read-Host "Select instance"
         if ($choice -match '^\d+$') {
-            $index = [int]$choice - 1
-            if ($index -ge 0 -and $index -lt $files.Count) {
-                return $files[$index]
+            $selected = [int]$choice - 1
+            if ($selected -ge 0 -and $selected -lt $files.Count) {
+                return $files[$selected]
             }
         }
         Write-Info "Invalid selection."
     }
 }
 
-function Get-InstanceMeta {
-    param([System.IO.FileInfo]$File)
+function Invoke-TextDownload {
+    param([string]$Url)
 
-    $parts = $File.BaseName -split "-"
-    $service = ($parts[0..1] -join "-")
-    $instance = ($parts[2..($parts.Length - 1)] -join "-")
-    return @{ service = $service; instance = $instance }
-}
-
-function Get-InstanceConfigPath {
-    param([string]$Service, [string]$Instance)
-    return (Join-Path $script:InstallDir "config\$Service-$Instance.json")
-}
-
-function Write-ServiceConfig {
-    param([string]$Service, [string]$Instance, [string]$BindHost, [int]$Port, [string]$DataPath)
-
-    $configDir = Join-Path $script:InstallDir "config"
-    New-Item -ItemType Directory -Force -Path $configDir | Out-Null
-
-    if ($Service -eq "vldb-lancedb") {
-        New-Item -ItemType Directory -Force -Path $DataPath | Out-Null
-        @{
-            host = $BindHost
-            port = $Port
-            db_path = $DataPath
-        } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Get-InstanceConfigPath $Service $Instance)
-    } else {
-        $dataDir = Split-Path -Parent $DataPath
-        New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
-        @{
-            host = $BindHost
-            port = $Port
-            db_path = $DataPath
-            memory_limit = "2GB"
-            threads = 4
-        } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Get-InstanceConfigPath $Service $Instance)
+    try {
+        return (Invoke-WebRequest -UseBasicParsing -Uri $Url).Content
+    } catch {
+        return $null
     }
 }
 
-function Get-ServiceName {
-    param([string]$Service, [string]$Instance)
-    return "VulcanLocalDB-$Service-$Instance"
+function Get-RemoteScriptVersion {
+    param([string]$ScriptName)
+
+    $content = Invoke-TextDownload "$RawBaseUrl/$ScriptName"
+    if (-not $content) { return $null }
+
+    $match = [regex]::Match($content, '\$ScriptVersion\s*=\s*"([^"]+)"')
+    if ($match.Success) {
+        return $match.Groups[1].Value
+    }
+
+    return $null
+}
+
+function Try-GetLatestReleaseTag {
+    try {
+        return (Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/releases/latest").tag_name
+    } catch {
+        return $null
+    }
+}
+
+function Get-LatestRelease {
+    if ($script:LatestRelease) {
+        return $script:LatestRelease
+    }
+
+    $script:LatestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/releases/latest"
+    if (-not $script:LatestRelease.tag_name) {
+        throw "Unable to resolve the latest release tag."
+    }
+
+    return $script:LatestRelease
+}
+
+function Download-FileWithProgress {
+    param(
+        [string]$Url,
+        [string]$OutFile,
+        [string]$Label
+    )
+
+    Write-Info "Downloading $Label"
+    Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $OutFile
+}
+
+function Get-TargetTriple {
+    $arch = $env:PROCESSOR_ARCHITECTURE
+    switch ($arch) {
+        "AMD64" { return "x86_64-pc-windows-msvc" }
+        "ARM64" { return "aarch64-pc-windows-msvc" }
+        default { throw "Unsupported Windows CPU architecture." }
+    }
+}
+
+function Download-ServiceArchive {
+    param(
+        [string]$Service,
+        [string]$Tag,
+        [string]$Target,
+        [string]$TempDir,
+        [object]$Release
+    )
+
+    $archiveName = "$Service-$Tag-$Target.zip"
+    $checksumName = "$archiveName.sha256"
+    $archivePath = Join-Path $TempDir $archiveName
+    $checksumPath = Join-Path $TempDir $checksumName
+    $baseUrl = "$RepoUrl/releases/download/$Tag"
+
+    if ($Release.assets.name -notcontains $archiveName) {
+        throw "The current release does not provide $archiveName."
+    }
+
+    Download-FileWithProgress -Url "$baseUrl/$archiveName" -OutFile $archivePath -Label $archiveName
+    Download-FileWithProgress -Url "$baseUrl/$checksumName" -OutFile $checksumPath -Label $checksumName
+
+    $expected = (Get-Content $checksumPath -Raw).Split(" ")[0].Trim().ToLowerInvariant()
+    $actual = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
+    if ($expected -ne $actual) {
+        throw "Checksum verification failed for $archiveName."
+    }
+
+    return $archivePath
+}
+
+function Install-ServiceBinaryFromArchive {
+    param(
+        [string]$ArchivePath,
+        [string]$Service,
+        [string]$TempDir
+    )
+
+    $extractDir = Join-Path $TempDir "extract-$Service"
+    if (Test-Path $extractDir) {
+        Remove-Item -Recurse -Force $extractDir -ErrorAction SilentlyContinue
+    }
+    New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+
+    Expand-Archive -Path $ArchivePath -DestinationPath $extractDir -Force
+    $binary = Get-ChildItem -Path $extractDir -Recurse -File -Filter "$Service.exe" | Select-Object -First 1
+    $example = Get-ChildItem -Path $extractDir -Recurse -File -Filter "$Service.json.example" | Select-Object -First 1
+
+    if (-not $binary -or -not $example) {
+        throw "The archive layout is missing the expected binary or example config."
+    }
+
+    New-Item -ItemType Directory -Force -Path (Join-Path $script:InstallDir "bin"), (Join-Path $script:InstallDir "share\examples") | Out-Null
+    Copy-Item $binary.FullName (Join-Path $script:InstallDir "bin\$Service.exe") -Force
+    Copy-Item $example.FullName (Join-Path $script:InstallDir "share\examples\$Service.json.example") -Force
+}
+
+function Install-ServiceBinary {
+    param(
+        [string]$Service,
+        [string]$Tag
+    )
+
+    $release = Get-LatestRelease
+    $target = Get-TargetTriple
+    $resolvedTag = if ($Tag) { $Tag } else { [string]$release.tag_name }
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("vulcanlocaldb-" + [guid]::NewGuid().ToString("N"))
+
+    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+    try {
+        $archivePath = Download-ServiceArchive -Service $Service -Tag $resolvedTag -Target $target -TempDir $tempDir -Release $release
+        Install-ServiceBinaryFromArchive -ArchivePath $archivePath -Service $Service -TempDir $tempDir
+    } finally {
+        Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
+    }
+}
+
+function Ensure-ServiceBinaryInstalled {
+    param([string]$Service)
+
+    $binaryPath = Join-Path $script:InstallDir "bin\$Service.exe"
+    if (Test-Path $binaryPath) {
+        return
+    }
+
+    $release = Get-LatestRelease
+    $script:ReleaseTag = [string]$release.tag_name
+    Install-ServiceBinary -Service $Service -Tag $script:ReleaseTag
+    Write-Config
+}
+
+function Get-InstalledServiceKinds {
+    $services = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($file in Get-InstanceFiles) {
+        $meta = Get-InstanceMeta $file
+        [void]$services.Add($meta.service)
+    }
+
+    foreach ($service in @("vldb-lancedb", "vldb-duckdb")) {
+        if (Test-Path (Join-Path $script:InstallDir "bin\$service.exe")) {
+            [void]$services.Add($service)
+        }
+    }
+
+    return @($services)
 }
 
 function Get-WinSWTemplatePath {
@@ -536,14 +819,12 @@ function Get-ServiceWrapperDir {
 
 function Get-ServiceWrapperExePath {
     param([string]$Service, [string]$Instance)
-    $serviceName = Get-ServiceName -Service $Service -Instance $Instance
-    return (Join-Path (Get-ServiceWrapperDir -Service $Service -Instance $Instance) "$serviceName.exe")
+    return (Join-Path (Get-ServiceWrapperDir -Service $Service -Instance $Instance) "$Service-$Instance.exe")
 }
 
 function Get-ServiceWrapperConfigPath {
     param([string]$Service, [string]$Instance)
-    $serviceName = Get-ServiceName -Service $Service -Instance $Instance
-    return (Join-Path (Get-ServiceWrapperDir -Service $Service -Instance $Instance) "$serviceName.xml")
+    return (Join-Path (Get-ServiceWrapperDir -Service $Service -Instance $Instance) "$Service-$Instance.xml")
 }
 
 function Escape-XmlText {
@@ -580,16 +861,22 @@ function Ensure-ServiceBuilderInstalled {
 }
 
 function Remove-LegacyStartupTask {
-    param([string]$Service, [string]$Instance)
+    param([string]$RegisteredName)
 
-    Unregister-ScheduledTask -TaskName (Get-ServiceName -Service $Service -Instance $Instance) -Confirm:$false -ErrorAction SilentlyContinue
-    Remove-Item (Join-Path $script:RunDir "$Service-$Instance.cmd") -Force -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($RegisteredName)) {
+        return
+    }
+
+    Unregister-ScheduledTask -TaskName $RegisteredName -Confirm:$false -ErrorAction SilentlyContinue
 }
 
 function Write-ServiceWrapperConfig {
-    param([string]$Service, [string]$Instance)
+    param(
+        [string]$Service,
+        [string]$Instance,
+        [string]$RegisteredName
+    )
 
-    $serviceName = Get-ServiceName -Service $Service -Instance $Instance
     $wrapperDir = Get-ServiceWrapperDir -Service $Service -Instance $Instance
     $wrapperExe = Get-ServiceWrapperExePath -Service $Service -Instance $Instance
     $wrapperConfig = Get-ServiceWrapperConfigPath -Service $Service -Instance $Instance
@@ -600,8 +887,7 @@ function Write-ServiceWrapperConfig {
     New-Item -ItemType Directory -Force -Path $wrapperDir, $logDir | Out-Null
     Copy-Item (Ensure-ServiceBuilderInstalled) $wrapperExe -Force
 
-    $escapedServiceName = Escape-XmlText $serviceName
-    $escapedDisplayName = Escape-XmlText ("VulcanLocalDB $Service $Instance")
+    $escapedName = Escape-XmlText $RegisteredName
     $escapedBinary = Escape-XmlText $binaryPath
     $escapedConfig = Escape-XmlText $jsonConfig
     $escapedWorkDir = Escape-XmlText $script:InstallDir
@@ -609,9 +895,9 @@ function Write-ServiceWrapperConfig {
 
     @"
 <service>
-  <id>$escapedServiceName</id>
-  <name>$escapedDisplayName</name>
-  <description>$escapedDisplayName</description>
+  <id>$escapedName</id>
+  <name>$escapedName</name>
+  <description>$escapedName</description>
   <executable>$escapedBinary</executable>
   <arguments>--config &quot;$escapedConfig&quot;</arguments>
   <workingdirectory>$escapedWorkDir</workingdirectory>
@@ -628,19 +914,56 @@ function Write-ServiceWrapperConfig {
     return $wrapperExe
 }
 
+function Remove-WindowsServiceByName {
+    param([string]$RegisteredName)
+
+    if ([string]::IsNullOrWhiteSpace($RegisteredName)) {
+        return
+    }
+
+    $service = Get-Service -Name $RegisteredName -ErrorAction SilentlyContinue
+    if (-not $service) {
+        return
+    }
+
+    if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+        Stop-Service -Name $RegisteredName -Force -ErrorAction SilentlyContinue
+        try {
+            $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(20))
+        } catch {
+        }
+    }
+
+    & sc.exe delete $RegisteredName | Out-Null
+
+    for ($index = 0; $index -lt 20; $index++) {
+        Start-Sleep -Milliseconds 250
+        if (-not (Get-Service -Name $RegisteredName -ErrorAction SilentlyContinue)) {
+            break
+        }
+    }
+}
+
 function Test-Registered {
-    param([string]$Service, [string]$Instance)
-    return $null -ne (Get-Service -Name (Get-ServiceName -Service $Service -Instance $Instance) -ErrorAction SilentlyContinue)
+    param(
+        [string]$Service,
+        [string]$Instance,
+        [string]$ConfigPath = $null
+    )
+
+    $registeredName = Get-ServiceRegistrationName -Service $Service -Instance $Instance -ConfigPath $ConfigPath
+    return (Test-RegisteredByName $registeredName)
 }
 
 function Register-Instance {
     param([string]$Service, [string]$Instance)
 
-    $wrapperExe = Write-ServiceWrapperConfig -Service $Service -Instance $Instance
-    Remove-LegacyStartupTask -Service $Service -Instance $Instance
+    $registeredName = Get-ServiceRegistrationName -Service $Service -Instance $Instance
+    $wrapperExe = Write-ServiceWrapperConfig -Service $Service -Instance $Instance -RegisteredName $registeredName
 
-    & $wrapperExe stop 2>$null
-    & $wrapperExe uninstall 2>$null
+    Remove-LegacyStartupTask -RegisteredName $registeredName
+    Remove-WindowsServiceByName -RegisteredName $registeredName
+
     & $wrapperExe install
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to install the Windows service."
@@ -653,17 +976,77 @@ function Register-Instance {
 }
 
 function Unregister-Instance {
+    param(
+        [string]$Service,
+        [string]$Instance,
+        [string]$RegisteredName = $null
+    )
+
+    $nameToRemove = if ($RegisteredName) { $RegisteredName } else { Get-ServiceRegistrationName -Service $Service -Instance $Instance }
+
+    Remove-LegacyStartupTask -RegisteredName $nameToRemove
+    Remove-WindowsServiceByName -RegisteredName $nameToRemove
+    Remove-Item (Get-ServiceWrapperDir -Service $Service -Instance $Instance) -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+function Start-InstanceService {
     param([string]$Service, [string]$Instance)
 
-    $wrapperExe = Get-ServiceWrapperExePath -Service $Service -Instance $Instance
-    Remove-LegacyStartupTask -Service $Service -Instance $Instance
-
-    if (Test-Path $wrapperExe) {
-        & $wrapperExe stop 2>$null
-        & $wrapperExe uninstall 2>$null
+    $registeredName = Get-ServiceRegistrationName -Service $Service -Instance $Instance
+    if (-not (Test-RegisteredByName $registeredName)) {
+        Write-Info "This instance is not registered. Re-registering it now."
+        Register-Instance -Service $Service -Instance $Instance
+        return
     }
 
-    Remove-Item (Get-ServiceWrapperDir -Service $Service -Instance $Instance) -Recurse -Force -ErrorAction SilentlyContinue
+    Start-Service -Name $registeredName -ErrorAction SilentlyContinue
+}
+
+function Stop-InstanceService {
+    param([string]$Service, [string]$Instance)
+
+    $registeredName = Get-ServiceRegistrationName -Service $Service -Instance $Instance
+    if (-not (Test-RegisteredByName $registeredName)) {
+        Write-Info "This instance is not registered."
+        return
+    }
+
+    Stop-Service -Name $registeredName -Force -ErrorAction SilentlyContinue
+}
+
+function Write-ServiceConfig {
+    param(
+        [string]$Service,
+        [string]$Instance,
+        [string]$BindHost,
+        [int]$Port,
+        [string]$DataPath,
+        [string]$ServiceName
+    )
+
+    $configDir = Join-Path $script:InstallDir "config"
+    New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+
+    if ($Service -eq "vldb-lancedb") {
+        New-Item -ItemType Directory -Force -Path $DataPath | Out-Null
+        @{
+            host = $BindHost
+            port = $Port
+            db_path = $DataPath
+            service_name = $ServiceName
+        } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Get-InstanceConfigPath $Service $Instance)
+    } else {
+        $dataDir = Split-Path -Parent $DataPath
+        New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+        @{
+            host = $BindHost
+            port = $Port
+            db_path = $DataPath
+            memory_limit = "2GB"
+            threads = 4
+            service_name = $ServiceName
+        } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Get-InstanceConfigPath $Service $Instance)
+    }
 }
 
 function Show-Instances {
@@ -675,120 +1058,385 @@ function Show-Instances {
 
     foreach ($file in $files) {
         $meta = Get-InstanceMeta $file
-        $cfg = Get-Content $file.FullName -Raw | ConvertFrom-Json
-        $registered = if (Test-Registered $meta.service $meta.instance) { "registered" } else { "not registered" }
-        Write-Host ("{0} {1} | {2}:{3} | {4} | {5}" -f $meta.service, $meta.instance, $cfg.host, $cfg.port, $registered, $cfg.db_path)
+        $config = Read-InstanceConfig $file.FullName
+        $serviceName = Get-ServiceRegistrationName -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName
+        $registration = if (Test-Registered -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName) { "registered" } else { "not registered" }
+        $runtime = if (Test-ServiceRunningByName $serviceName) { "running" } else { "stopped" }
+        Write-Host ("{0} {1} | {2} | {3}:{4} | {5}/{6} | {7}" -f $meta.service, $meta.instance, $serviceName, $config.host, $config.port, $registration, $runtime, $config.db_path)
     }
+}
+
+function Choose-DataRoots {
+    $defaultLanceRoot = Get-DefaultDataRoot "vldb-lancedb"
+    $defaultDuckRoot = Get-DefaultDataRoot "vldb-duckdb"
+
+    while ($true) {
+        $lanceRoot = Read-Default "LanceDB data root" $defaultLanceRoot
+        if (-not [System.IO.Path]::IsPathRooted($lanceRoot)) {
+            Write-Info "Invalid LanceDB data root."
+            continue
+        }
+        if (Test-PathsOverlap $script:InstallDir $lanceRoot) {
+            Write-Info "LanceDB data root must stay outside the installation directory."
+            continue
+        }
+        if ((Test-Path $lanceRoot) -and -not (Test-Path $lanceRoot -PathType Container)) {
+            Write-Info "LanceDB data root already exists and is not a directory."
+            continue
+        }
+
+        $duckRoot = Read-Default "DuckDB data root" $defaultDuckRoot
+        if (-not [System.IO.Path]::IsPathRooted($duckRoot)) {
+            Write-Info "Invalid DuckDB data root."
+            continue
+        }
+        if (Test-PathsOverlap $script:InstallDir $duckRoot) {
+            Write-Info "DuckDB data root must stay outside the installation directory."
+            continue
+        }
+        if ((Test-Path $duckRoot) -and -not (Test-Path $duckRoot -PathType Container)) {
+            Write-Info "DuckDB data root already exists and is not a directory."
+            continue
+        }
+        if (Test-PathsOverlap $lanceRoot $duckRoot) {
+            Write-Info "LanceDB and DuckDB data roots must not overlap."
+            continue
+        }
+
+        $defaultLancePath = Get-DefaultInstanceDataPath -Service "vldb-lancedb" -Instance "default" -LanceRoot $lanceRoot -DuckRoot $duckRoot
+        $defaultDuckPath = Get-DefaultInstanceDataPath -Service "vldb-duckdb" -Instance "default" -LanceRoot $lanceRoot -DuckRoot $duckRoot
+
+        $lanceError = Get-DataPathValidationError -CandidatePath $defaultLancePath -Service "vldb-lancedb" -Instance "default"
+        if ($lanceError) {
+            Write-Info $lanceError
+            continue
+        }
+
+        $duckError = Get-DataPathValidationError -CandidatePath $defaultDuckPath -Service "vldb-duckdb" -Instance "default"
+        if ($duckError) {
+            Write-Info $duckError
+            continue
+        }
+
+        $script:LanceDbRoot = Resolve-NormalizedPath $lanceRoot
+        $script:DuckDbRoot = Resolve-NormalizedPath $duckRoot
+        New-Item -ItemType Directory -Force -Path $script:LanceDbRoot, $script:DuckDbRoot | Out-Null
+        return
+    }
+}
+
+function Prompt-ForPort {
+    param(
+        [string]$PromptText,
+        [int]$DefaultPort,
+        [string]$Service,
+        [string]$Instance,
+        [int]$CurrentPort = 0,
+        [string]$CurrentServiceName = $null
+    )
+
+    while ($true) {
+        $portInput = Read-Default $PromptText "$DefaultPort"
+        $validationError = Get-PortValidationError -CandidatePort $portInput -Service $Service -Instance $Instance -CurrentPort $CurrentPort -CurrentServiceName $CurrentServiceName
+        if (-not $validationError) {
+            return [int]$portInput
+        }
+
+        Write-Info $validationError
+    }
+}
+
+function Prompt-ForServiceName {
+    param(
+        [string]$Service,
+        [string]$Instance,
+        [string]$DefaultName,
+        [string]$CurrentName = $null
+    )
+
+    while ($true) {
+        $inputName = Read-Default "Windows service name" $DefaultName
+        $validationError = Get-ServiceNameValidationError -CandidateName $inputName -Service $Service -Instance $Instance -CurrentName $CurrentName
+        if (-not $validationError) {
+            return $inputName
+        }
+
+        Write-Info $validationError
+    }
+}
+
+function Initialize-Installation {
+    Write-Step "Running initial one-click installation"
+
+    $release = Get-LatestRelease
+    $script:ReleaseTag = [string]$release.tag_name
+
+    Choose-DataRoots
+
+    $bindHost = Read-Default "Service bind IP" "127.0.0.1"
+    while ([string]::IsNullOrWhiteSpace($bindHost)) {
+        Write-Info "IP must not be empty."
+        $bindHost = Read-Default "Service bind IP" "127.0.0.1"
+    }
+
+    $lancePort = Prompt-ForPort -PromptText "LanceDB port" -DefaultPort (Get-DefaultPort "vldb-lancedb") -Service "vldb-lancedb" -Instance "default"
+    while ($true) {
+        $duckPort = Prompt-ForPort -PromptText "DuckDB port" -DefaultPort (Get-DefaultPort "vldb-duckdb") -Service "vldb-duckdb" -Instance "default"
+        if ($duckPort -ne $lancePort) {
+            break
+        }
+        Write-Info "LanceDB and DuckDB must use different ports."
+    }
+
+    $lanceServiceName = Prompt-ForServiceName -Service "vldb-lancedb" -Instance "default" -DefaultName (New-UniqueServiceName -Service "vldb-lancedb" -Instance "default")
+    $duckServiceName = Prompt-ForServiceName -Service "vldb-duckdb" -Instance "default" -DefaultName (New-UniqueServiceName -Service "vldb-duckdb" -Instance "default")
+    while ([string]::Equals($lanceServiceName, $duckServiceName, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Info "The two default services must not share the same service name."
+        $duckServiceName = Prompt-ForServiceName -Service "vldb-duckdb" -Instance "default" -DefaultName (New-UniqueServiceName -Service "vldb-duckdb" -Instance "default" -CurrentName $duckServiceName)
+    }
+
+    Install-ServiceBinary -Service "vldb-lancedb" -Tag $script:ReleaseTag
+    Install-ServiceBinary -Service "vldb-duckdb" -Tag $script:ReleaseTag
+
+    Write-ServiceConfig -Service "vldb-lancedb" -Instance "default" -BindHost $bindHost -Port $lancePort -DataPath (Get-DefaultInstanceDataPath -Service "vldb-lancedb" -Instance "default") -ServiceName $lanceServiceName
+    Write-ServiceConfig -Service "vldb-duckdb" -Instance "default" -BindHost $bindHost -Port $duckPort -DataPath (Get-DefaultInstanceDataPath -Service "vldb-duckdb" -Instance "default") -ServiceName $duckServiceName
+
+    Register-Instance -Service "vldb-lancedb" -Instance "default"
+    Register-Instance -Service "vldb-duckdb" -Instance "default"
+
+    $script:Initialized = $true
+    $script:InstalledScriptVersion = $ScriptVersion
+    Write-Config
+    Write-Info "Initial installation completed."
 }
 
 function Configure-Instance {
     $file = Choose-InstanceFile
     if (-not $file) { return }
+
     $meta = Get-InstanceMeta $file
-    $cfg = Get-Content $file.FullName -Raw | ConvertFrom-Json
+    $config = Read-InstanceConfig $file.FullName
+    $currentServiceName = Get-ServiceRegistrationName -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName
+    $wasRegistered = Test-Registered -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName
 
     while ($true) {
-        $bindHost = Read-Host ("Bind IP [{0}]" -f $cfg.host)
-        if ([string]::IsNullOrWhiteSpace($bindHost)) { $bindHost = $cfg.host }
-
-        $portInput = Read-Host ("Port [{0}]" -f $cfg.port)
-        if ([string]::IsNullOrWhiteSpace($portInput)) { $portInput = "$($cfg.port)" }
-        if (-not ($portInput -match '^\d+$' -and [int]$portInput -ge 1 -and [int]$portInput -le 65535)) {
-            Write-Info "Invalid port."
+        $bindHost = Read-Default "Bind IP" ([string]$config.host)
+        if ([string]::IsNullOrWhiteSpace($bindHost)) {
+            Write-Info "IP must not be empty."
             continue
         }
 
-        $dataPathInput = Read-Host ("Data path [{0}]" -f $cfg.db_path)
-        if ([string]::IsNullOrWhiteSpace($dataPathInput)) { $dataPathInput = $cfg.db_path }
-        $validationError = Get-DataPathValidationError -CandidatePath $dataPathInput -Service $meta.service -Instance $meta.instance
-        if ($validationError) {
-            Write-Info $validationError
+        $port = Prompt-ForPort -PromptText "Port" -DefaultPort ([int]$config.port) -Service $meta.service -Instance $meta.instance -CurrentPort ([int]$config.port) -CurrentServiceName $currentServiceName
+
+        $dataPathInput = Read-Default "Data path" ([string]$config.db_path)
+        $dataPathError = Get-DataPathValidationError -CandidatePath $dataPathInput -Service $meta.service -Instance $meta.instance
+        if ($dataPathError) {
+            Write-Info $dataPathError
             continue
         }
 
-        $port = [int]$portInput
+        $serviceName = Prompt-ForServiceName -Service $meta.service -Instance $meta.instance -DefaultName (New-UniqueServiceName -Service $meta.service -Instance $meta.instance -PreferredName $currentServiceName -CurrentName $currentServiceName) -CurrentName $currentServiceName
         $dataPath = Resolve-NormalizedPath $dataPathInput
         break
     }
 
-    Write-ServiceConfig -Service $meta.service -Instance $meta.instance -BindHost $bindHost -Port $port -DataPath $dataPath
-    Write-Config
-    if (Test-Registered $meta.service $meta.instance) {
-        Register-Instance -Service $meta.service -Instance $meta.instance
+    if ($wasRegistered -and -not [string]::Equals($currentServiceName, $serviceName, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Unregister-Instance -Service $meta.service -Instance $meta.instance -RegisteredName $currentServiceName
     }
+
+    Write-ServiceConfig -Service $meta.service -Instance $meta.instance -BindHost $bindHost -Port $port -DataPath $dataPath -ServiceName $serviceName
+    Write-Config
+    Register-Instance -Service $meta.service -Instance $meta.instance
 }
 
 function Install-SingleInstance {
     $service = Choose-Service
     Ensure-ServiceBinaryInstalled -Service $service
-    Write-Config
 
     while ($true) {
-        $instance = Read-Host "Instance name [default]"
-        if ([string]::IsNullOrWhiteSpace($instance)) { $instance = "default" }
-        if ($instance -match '^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$') {
-            if (-not (Test-Path (Get-InstanceConfigPath $service $instance))) { break }
-            Write-Info "This instance already exists."
-        } else {
+        $instance = Read-Default "Instance name" "default"
+        if (-not (Test-ValidInstanceName $instance)) {
             Write-Info "Instance names may contain letters, numbers, dash, and underscore."
+            continue
         }
+        if (Test-Path (Get-InstanceConfigPath $service $instance)) {
+            Write-Info "This instance already exists."
+            continue
+        }
+        break
     }
 
     while ($true) {
-        $bindHost = Read-Host "Bind IP [127.0.0.1]"
-        if ([string]::IsNullOrWhiteSpace($bindHost)) { $bindHost = "127.0.0.1" }
-
-        $defaultPort = if ($service -eq "vldb-lancedb") { 50051 } else { 50052 }
-        $portInput = Read-Host ("Port [{0}]" -f $defaultPort)
-        if ([string]::IsNullOrWhiteSpace($portInput)) { $portInput = "$defaultPort" }
-        if (-not ($portInput -match '^\d+$' -and [int]$portInput -ge 1 -and [int]$portInput -le 65535)) {
-            Write-Info "Invalid port."
+        $bindHost = Read-Default "Bind IP" "127.0.0.1"
+        if ([string]::IsNullOrWhiteSpace($bindHost)) {
+            Write-Info "IP must not be empty."
             continue
         }
+
+        $port = Prompt-ForPort -PromptText "Port" -DefaultPort (Get-DefaultPort $service) -Service $service -Instance $instance
 
         $defaultDataPath = Get-DefaultInstanceDataPath -Service $service -Instance $instance
-        $dataPathInput = Read-Host ("Data path [{0}]" -f $defaultDataPath)
-        if ([string]::IsNullOrWhiteSpace($dataPathInput)) { $dataPathInput = $defaultDataPath }
-        $validationError = Get-DataPathValidationError -CandidatePath $dataPathInput -Service $service -Instance $instance
-        if ($validationError) {
-            Write-Info $validationError
+        $dataPathInput = Read-Default "Data path" $defaultDataPath
+        $dataPathError = Get-DataPathValidationError -CandidatePath $dataPathInput -Service $service -Instance $instance
+        if ($dataPathError) {
+            Write-Info $dataPathError
             continue
         }
 
-        $port = [int]$portInput
+        $serviceName = Prompt-ForServiceName -Service $service -Instance $instance -DefaultName (New-UniqueServiceName -Service $service -Instance $instance)
         $dataPath = Resolve-NormalizedPath $dataPathInput
         break
     }
 
-    Write-ServiceConfig -Service $service -Instance $instance -BindHost $bindHost -Port $port -DataPath $dataPath
+    Write-ServiceConfig -Service $service -Instance $instance -BindHost $bindHost -Port $port -DataPath $dataPath -ServiceName $serviceName
+    $script:Initialized = $true
     Write-Config
-    if (Confirm-Choice "Register this instance as a service now?" "N") {
-        Register-Instance -Service $service -Instance $instance
+    Register-Instance -Service $service -Instance $instance
+}
+
+function Start-SingleInstance {
+    $file = Choose-InstanceFile
+    if (-not $file) { return }
+
+    $meta = Get-InstanceMeta $file
+    Start-InstanceService -Service $meta.service -Instance $meta.instance
+}
+
+function Stop-SingleInstance {
+    $file = Choose-InstanceFile
+    if (-not $file) { return }
+
+    $meta = Get-InstanceMeta $file
+    Stop-InstanceService -Service $meta.service -Instance $meta.instance
+}
+
+function Start-AllInstances {
+    foreach ($file in Get-InstanceFiles) {
+        $meta = Get-InstanceMeta $file
+        Start-InstanceService -Service $meta.service -Instance $meta.instance
+    }
+}
+
+function Stop-AllInstances {
+    foreach ($file in Get-InstanceFiles) {
+        $meta = Get-InstanceMeta $file
+        Stop-InstanceService -Service $meta.service -Instance $meta.instance
     }
 }
 
 function Uninstall-SingleInstance {
     $file = Choose-InstanceFile
     if (-not $file) { return }
-    $meta = Get-InstanceMeta $file
-    $cfg = Get-Content $file.FullName -Raw | ConvertFrom-Json
 
-    if (Test-Registered $meta.service $meta.instance) {
-        Unregister-Instance -Service $meta.service -Instance $meta.instance
+    $meta = Get-InstanceMeta $file
+    $config = Read-InstanceConfig $file.FullName
+    $serviceName = Get-ServiceRegistrationName -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName
+
+    if (Test-RegisteredByName $serviceName) {
+        Unregister-Instance -Service $meta.service -Instance $meta.instance -RegisteredName $serviceName
     }
 
     Remove-Item $file.FullName -Force
-    Write-Info ("Database files were preserved at: {0}" -f $cfg.db_path)
+    Write-Info ("Database files were preserved at: {0}" -f $config.db_path)
 }
 
-function Toggle-ServiceRegistration {
-    $file = Choose-InstanceFile
-    if (-not $file) { return }
-    $meta = Get-InstanceMeta $file
-    if (Test-Registered $meta.service $meta.instance) {
-        Unregister-Instance -Service $meta.service -Instance $meta.instance
+function Update-ManagerScript {
+    $managerPath = Join-Path $script:InstallDir "bin\vldb.ps1"
+    $tempPath = Join-Path ([System.IO.Path]::GetTempPath()) ("vldb-" + [guid]::NewGuid().ToString("N") + ".ps1")
+
+    try {
+        Download-FileWithProgress -Url "$RawBaseUrl/vldb.ps1" -OutFile $tempPath -Label "vldb.ps1"
+        Copy-Item $tempPath $managerPath -Force
+    } finally {
+        Remove-Item $tempPath -Force -ErrorAction SilentlyContinue
+    }
+
+    $detectedVersion = [regex]::Match((Get-Content $managerPath -Raw), '\$ScriptVersion\s*=\s*"([^"]+)"').Groups[1].Value
+    if ($detectedVersion) {
+        $script:InstalledScriptVersion = $detectedVersion
+    }
+
+    Ensure-CmdLauncher
+    Write-Config
+    Write-Info "Manager script updated. Re-run the manager to load the new version."
+}
+
+function Update-ApplicationsToTag {
+    param([string]$TargetTag)
+
+    $installedKinds = Get-InstalledServiceKinds
+    if (-not $installedKinds -or $installedKinds.Count -eq 0) {
+        Write-Info "No application binaries are installed yet."
+        return
+    }
+
+    $runningStates = @{}
+    foreach ($file in Get-InstanceFiles) {
+        $meta = Get-InstanceMeta $file
+        $serviceName = Get-ServiceRegistrationName -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName
+        $runningStates["$($meta.service)|$($meta.instance)"] = [bool](Test-ServiceRunningByName $serviceName)
+    }
+
+    Stop-AllInstances
+
+    foreach ($service in $installedKinds) {
+        Install-ServiceBinary -Service $service -Tag $TargetTag
+    }
+
+    foreach ($file in Get-InstanceFiles) {
+        $meta = Get-InstanceMeta $file
+        $key = "$($meta.service)|$($meta.instance)"
+        if ($runningStates.ContainsKey($key) -and $runningStates[$key]) {
+            Start-InstanceService -Service $meta.service -Instance $meta.instance
+        }
+    }
+
+    $script:ReleaseTag = $TargetTag
+    Write-Config
+    Write-Info "Application binaries updated to $TargetTag."
+}
+
+function Check-Updates {
+    Write-Info "Checking for updates..."
+
+    $remoteScriptVersion = Get-RemoteScriptVersion -ScriptName "vldb.ps1"
+    $latestTag = Try-GetLatestReleaseTag
+
+    Write-Info "Current manager script version: $ScriptVersion"
+    if ($remoteScriptVersion) {
+        Write-Info "Latest manager script version: $remoteScriptVersion"
+        if ((Compare-VersionStrings $remoteScriptVersion $ScriptVersion) -gt 0) {
+            Write-Info "Manager script update available."
+            if (Confirm-Choice "Update the manager script now?" "Y") {
+                Update-ManagerScript
+            }
+        } else {
+            Write-Info "Manager script is up to date."
+        }
     } else {
-        Register-Instance -Service $meta.service -Instance $meta.instance
+        Write-Info "Latest manager script version: unavailable"
+    }
+
+    if ($script:ReleaseTag) {
+        Write-Info "Installed release tag: $($script:ReleaseTag)"
+    } else {
+        Write-Info "Installed release tag: not set"
+    }
+
+    if ($latestTag) {
+        Write-Info "Latest release tag: $latestTag"
+        if (-not $script:ReleaseTag) {
+            Write-Info "No release tag is stored locally yet."
+        } elseif ((Compare-VersionStrings $latestTag $script:ReleaseTag) -gt 0) {
+            Write-Info "A newer binary release is available."
+            if (Confirm-Choice "Update application binaries now?" "Y") {
+                Update-ApplicationsToTag -TargetTag $latestTag
+            }
+        } else {
+            Write-Info "Binary release is up to date."
+        }
+    } else {
+        Write-Info "Latest release tag: unavailable"
     }
 }
 
@@ -798,11 +1446,13 @@ function Remove-LauncherOnly {
         (Join-Path $binDir "vldb.cmd"),
         (Join-Path $binDir "vldb.ps1")
     )
+
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $updated = ""
     if ($currentPath) {
         $updated = ($currentPath.Split(";") | Where-Object { $_ -and $_ -ne $binDir }) -join ";"
     }
+
     [Environment]::SetEnvironmentVariable("Path", $updated, "User")
     Clear-UserEnvironmentValue -Name "VULCANLOCALDB_HOME" -ExpectedValue $script:InstallDir
     Clear-UserEnvironmentValue -Name "VULCANLOCALDB_BIN" -ExpectedValue $binDir
@@ -815,10 +1465,12 @@ function Remove-LauncherOnly {
 function Uninstall-All {
     foreach ($file in Get-InstanceFiles) {
         $meta = Get-InstanceMeta $file
-        if (Test-Registered $meta.service $meta.instance) {
-            Unregister-Instance -Service $meta.service -Instance $meta.instance
+        $serviceName = Get-ServiceRegistrationName -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName
+        if (Test-RegisteredByName $serviceName) {
+            Unregister-Instance -Service $meta.service -Instance $meta.instance -RegisteredName $serviceName
         }
     }
+
     Remove-LauncherOnly
     Start-DeferredCleanup -Paths @(
         $script:InstallDir,
@@ -838,19 +1490,36 @@ function Show-Menu {
     Write-Host "===================================="
     Write-Host "1. Check for updates"
     Write-Host "2. Show installed instances"
-    Write-Host "3. Modify host, port or data path"
+    Write-Host "3. Modify host, port, data path or service name"
     Write-Host "4. Install a single service instance"
-    Write-Host "5. Uninstall a single service instance"
-    Write-Host "6. Register or unregister a service instance"
-    Write-Host "7. Remove only the vldb manager command"
-    Write-Host "8. Uninstall everything"
+    Write-Host "5. Start a single service instance"
+    Write-Host "6. Stop a single service instance"
+    Write-Host "7. Start all service instances"
+    Write-Host "8. Stop all service instances"
+    Write-Host "9. Uninstall a single service instance"
+    Write-Host "10. Remove only the vldb manager command"
+    Write-Host "11. Uninstall everything"
     Write-Host "0. Exit"
 }
 
 Resolve-InstallDir
+Ensure-CmdLauncher
+
+if (-not (Test-Path (Join-Path $script:InstallDir "config"))) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $script:InstallDir "config") | Out-Null
+}
+
+if ((Get-InstanceFiles).Count -gt 0) {
+    $script:Initialized = $true
+}
+
+$script:InstalledScriptVersion = $ScriptVersion
 Write-Config
 
-if ($FromInstaller) {
+if (-not (Is-Initialized)) {
+    Write-Info "No initialized application installation was detected. Starting the one-click installation flow."
+    Initialize-Installation
+} elseif ($FromInstaller) {
     Write-Info "Installer detected an existing installation. Running an update check first."
     Check-Updates
 }
@@ -863,10 +1532,13 @@ while ($true) {
         "2" { Show-Instances }
         "3" { Configure-Instance }
         "4" { Install-SingleInstance }
-        "5" { Uninstall-SingleInstance }
-        "6" { Toggle-ServiceRegistration }
-        "7" { Remove-LauncherOnly }
-        "8" { Uninstall-All }
+        "5" { Start-SingleInstance }
+        "6" { Stop-SingleInstance }
+        "7" { Start-AllInstances }
+        "8" { Stop-AllInstances }
+        "9" { Uninstall-SingleInstance }
+        "10" { Remove-LauncherOnly }
+        "11" { Uninstall-All }
         "0" { break }
         default { Write-Info "Invalid selection." }
     }

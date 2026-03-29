@@ -1,21 +1,11 @@
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.6"
+$ScriptVersion = "0.1.7"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
-$RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
 $GlobalHome = Join-Path $HOME ".vulcan\vldb"
 $GlobalConfig = Join-Path $GlobalHome "config.json"
-$RunDir = Join-Path $GlobalHome "run"
 $InstallDir = $null
-$ReleaseTag = $null
-$HostBind = "127.0.0.1"
-$LanceDbPort = 50051
-$DuckDbPort = 50052
-$LanceDbRoot = Join-Path $GlobalHome "lancedb"
-$DuckDbRoot = Join-Path $GlobalHome "duckdb"
-$InstallMode = "full"
-$WinSWVersion = "v2.12.0"
 $ManagerScriptVersion = $ScriptVersion
 
 try {
@@ -40,7 +30,7 @@ function Show-Banner {
     Write-Host "===================================="
     Write-Host "       VulcanLocalDB Setup"
     Write-Host "===================================="
-    Write-Host "PowerShell 5.x build currently uses English only."
+    Write-Host "The installer now installs only the manager."
 }
 
 function Read-Default {
@@ -53,10 +43,12 @@ function Read-Default {
 
 function Confirm-Choice {
     param([string]$PromptText, [string]$DefaultValue = "Y")
+
     while ($true) {
         $prompt = "$PromptText [$DefaultValue]"
         $value = Read-Host $prompt
         if ([string]::IsNullOrWhiteSpace($value)) { $value = $DefaultValue }
+
         switch -Regex ($value) {
             "^[Yy]$" { return $true }
             "^[Nn]$" { return $false }
@@ -67,11 +59,14 @@ function Confirm-Choice {
 
 function Normalize-Version {
     param([string]$Value)
+
     if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+
     $normalized = $Value.Trim()
     if ($normalized.StartsWith("v")) {
         $normalized = $normalized.Substring(1)
     }
+
     return $normalized
 }
 
@@ -92,33 +87,36 @@ function Compare-VersionStrings {
     }
 }
 
-function Get-IsAdmin {
-    $current = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = [Security.Principal.WindowsPrincipal]::new($current)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
-
 function Get-DefaultInstallDir {
     if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
         return (Join-Path $env:APPDATA "VulcanLocalDB")
     }
+
     if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         return (Join-Path $env:LOCALAPPDATA "VulcanLocalDB")
     }
+
     return (Join-Path $HOME "AppData\Roaming\VulcanLocalDB")
+}
+
+function Read-Config {
+    if (-not (Test-Path $script:GlobalConfig)) {
+        return $null
+    }
+
+    try {
+        return Get-Content $script:GlobalConfig -Raw | ConvertFrom-Json
+    } catch {
+        return $null
+    }
 }
 
 function Get-ExistingInstallDir {
     $candidates = @()
+    $config = Read-Config
 
-    if (Test-Path $script:GlobalConfig) {
-        try {
-            $config = Get-Content $script:GlobalConfig -Raw | ConvertFrom-Json
-            if ($config.install_dir) {
-                $candidates += [string]$config.install_dir
-            }
-        } catch {
-        }
+    if ($config -and $config.install_dir) {
+        $candidates += [string]$config.install_dir
     }
 
     if (-not [string]::IsNullOrWhiteSpace($env:VULCANLOCALDB_HOME)) {
@@ -128,8 +126,8 @@ function Get-ExistingInstallDir {
     $candidates += (Get-DefaultInstallDir)
 
     foreach ($candidate in ($candidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)) {
-        $controllerPath = Join-Path $candidate "bin\vldb.ps1"
-        if (Test-Path $controllerPath) {
+        $managerPath = Join-Path $candidate "bin\vldb.ps1"
+        if (Test-Path $managerPath) {
             return [System.IO.Path]::GetFullPath($candidate)
         }
     }
@@ -151,156 +149,6 @@ function Test-ValidInstallDir {
     }
 }
 
-function Test-ValidPort {
-    param([string]$Value)
-
-    if ($Value -notmatch '^\d+$') { return $false }
-    $port = [int]$Value
-    return $port -ge 1 -and $port -le 65535
-}
-
-function Get-DefaultDataRoot {
-    param([string]$Service)
-
-    if ($Service -eq "vldb-lancedb") {
-        return (Join-Path $script:GlobalHome "lancedb")
-    }
-    return (Join-Path $script:GlobalHome "duckdb")
-}
-
-function Get-DefaultInstanceDataPath {
-    param(
-        [string]$Service,
-        [string]$Instance,
-        [string]$LanceRoot = $script:LanceDbRoot,
-        [string]$DuckRoot = $script:DuckDbRoot
-    )
-
-    if ($Service -eq "vldb-lancedb") {
-        return (Join-Path $LanceRoot $Instance)
-    }
-    return (Join-Path (Join-Path $DuckRoot $Instance) "duckdb.db")
-}
-
-function Resolve-NormalizedPath {
-    param([string]$PathValue)
-
-    $fullPath = [System.IO.Path]::GetFullPath($PathValue)
-    if ($fullPath.Length -gt 3) {
-        $fullPath = $fullPath.TrimEnd('\', '/')
-    }
-    return $fullPath
-}
-
-function Test-PathsOverlap {
-    param([string]$LeftPath, [string]$RightPath)
-
-    $leftNormalized = Resolve-NormalizedPath $LeftPath
-    $rightNormalized = Resolve-NormalizedPath $RightPath
-
-    if ([string]::Equals($leftNormalized, $rightNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
-        return $true
-    }
-
-    $separator = [System.IO.Path]::DirectorySeparatorChar
-    $leftPrefix = $leftNormalized + $separator
-    $rightPrefix = $rightNormalized + $separator
-
-    return $rightNormalized.StartsWith($leftPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $leftNormalized.StartsWith($rightPrefix, [System.StringComparison]::OrdinalIgnoreCase)
-}
-
-function Get-ConfigDbPath {
-    param([string]$Path)
-
-    if (-not (Test-Path $Path)) { return $null }
-    try {
-        return (Get-Content $Path -Raw | ConvertFrom-Json).db_path
-    } catch {
-        return $null
-    }
-}
-
-function Get-ConfigFilesForInstallRoot {
-    param([string]$InstallRoot)
-
-    $configDir = Join-Path $InstallRoot "config"
-    if (-not (Test-Path $configDir)) {
-        return @()
-    }
-
-    return Get-ChildItem -Path $configDir -File | Where-Object {
-        $_.Name -like "vldb-lancedb-*.json" -or $_.Name -like "vldb-duckdb-*.json"
-    }
-}
-
-function Get-ConflictMessageForDataPath {
-    param(
-        [string]$CandidatePath,
-        [string]$Service,
-        [string]$Instance,
-        [string]$InstallRoot = $script:InstallDir
-    )
-
-    foreach ($file in (Get-ConfigFilesForInstallRoot -InstallRoot $InstallRoot)) {
-        $parts = $file.BaseName -split "-"
-        $existingService = ($parts[0..1] -join "-")
-        $existingInstance = ($parts[2..($parts.Length - 1)] -join "-")
-        if ($existingService -eq $Service -and $existingInstance -eq $Instance) {
-            continue
-        }
-
-        $existingPath = Get-ConfigDbPath $file.FullName
-        if ([string]::IsNullOrWhiteSpace($existingPath)) {
-            continue
-        }
-
-        if (Test-PathsOverlap $CandidatePath $existingPath) {
-            return "Data path conflicts with ${existingService}/${existingInstance}: $existingPath"
-        }
-    }
-
-    return $null
-}
-
-function Get-DataPathValidationError {
-    param(
-        [string]$CandidatePath,
-        [string]$Service,
-        [string]$Instance,
-        [string]$InstallRoot = $script:InstallDir
-    )
-
-    if (-not (Test-ValidInstallDir $CandidatePath)) {
-        return "Please use a legal absolute path."
-    }
-
-    if (Test-PathsOverlap $InstallRoot $CandidatePath) {
-        return "Database paths must stay outside the installation directory."
-    }
-
-    $conflict = Get-ConflictMessageForDataPath -CandidatePath $CandidatePath -Service $Service -Instance $Instance -InstallRoot $InstallRoot
-    if ($conflict) {
-        return $conflict
-    }
-
-    return $null
-}
-
-function Choose-InstallMode {
-    Write-Host "1. Full install (services + manager script)"
-    Write-Host "2. Manager script only"
-    while ($true) {
-        $choice = Read-Host "Select mode [1]"
-        switch ($choice) {
-            "" { $script:InstallMode = "full"; return }
-            "1" { $script:InstallMode = "full"; return }
-            "2" { $script:InstallMode = "controller-only"; return }
-            default { Write-Info "Please input 1 or 2." }
-        }
-    }
-}
-
 function Choose-InstallDir {
     $defaultDir = Get-DefaultInstallDir
 
@@ -311,9 +159,7 @@ function Choose-InstallDir {
             continue
         }
 
-        $candidateExists = Test-Path $candidate
-        $candidateIsDir = Test-Path $candidate -PathType Container
-        if ($candidateExists -and -not $candidateIsDir) {
+        if ((Test-Path $candidate) -and -not (Test-Path $candidate -PathType Container)) {
             Write-Info "The selected path already exists and is not a directory."
             continue
         }
@@ -333,102 +179,9 @@ function Choose-InstallDir {
     }
 }
 
-function Choose-DataRoots {
-    $defaultLanceRoot = Get-DefaultDataRoot "vldb-lancedb"
-    $defaultDuckRoot = Get-DefaultDataRoot "vldb-duckdb"
-
-    while ($true) {
-        $lanceRoot = Read-Default "LanceDB data root" $defaultLanceRoot
-        if (-not (Test-ValidInstallDir $lanceRoot)) {
-            Write-Info "Invalid LanceDB data root."
-            continue
-        }
-        if (Test-PathsOverlap $script:InstallDir $lanceRoot) {
-            Write-Info "LanceDB data root must stay outside the installation directory."
-            continue
-        }
-        if ((Test-Path $lanceRoot) -and -not (Test-Path $lanceRoot -PathType Container)) {
-            Write-Info "LanceDB data root already exists and is not a directory."
-            continue
-        }
-
-        $duckRoot = Read-Default "DuckDB data root" $defaultDuckRoot
-        if (-not (Test-ValidInstallDir $duckRoot)) {
-            Write-Info "Invalid DuckDB data root."
-            continue
-        }
-        if (Test-PathsOverlap $script:InstallDir $duckRoot) {
-            Write-Info "DuckDB data root must stay outside the installation directory."
-            continue
-        }
-        if ((Test-Path $duckRoot) -and -not (Test-Path $duckRoot -PathType Container)) {
-            Write-Info "DuckDB data root already exists and is not a directory."
-            continue
-        }
-        if (Test-PathsOverlap $lanceRoot $duckRoot) {
-            Write-Info "LanceDB and DuckDB data roots must not overlap."
-            continue
-        }
-
-        $defaultLancePath = Get-DefaultInstanceDataPath -Service "vldb-lancedb" -Instance "default" -LanceRoot $lanceRoot -DuckRoot $duckRoot
-        $defaultDuckPath = Get-DefaultInstanceDataPath -Service "vldb-duckdb" -Instance "default" -LanceRoot $lanceRoot -DuckRoot $duckRoot
-
-        $lanceError = Get-DataPathValidationError -CandidatePath $defaultLancePath -Service "vldb-lancedb" -Instance "default"
-        if ($lanceError) {
-            Write-Info $lanceError
-            continue
-        }
-
-        $duckError = Get-DataPathValidationError -CandidatePath $defaultDuckPath -Service "vldb-duckdb" -Instance "default"
-        if ($duckError) {
-            Write-Info $duckError
-            continue
-        }
-
-        Write-Info "LanceDB default data path: $defaultLancePath"
-        Write-Info "DuckDB default data path: $defaultDuckPath"
-        if (Confirm-Choice "Confirm these database locations?" "Y") {
-            $script:LanceDbRoot = Resolve-NormalizedPath $lanceRoot
-            $script:DuckDbRoot = Resolve-NormalizedPath $duckRoot
-            New-Item -ItemType Directory -Force -Path $script:LanceDbRoot, $script:DuckDbRoot | Out-Null
-            return
-        }
-    }
-}
-
-function Choose-NetworkSettings {
-    while ($true) {
-        $script:HostBind = Read-Default "Service bind IP" "127.0.0.1"
-        if ([string]::IsNullOrWhiteSpace($script:HostBind)) {
-            Write-Info "IP must not be empty."
-            continue
-        }
-
-        $lancePortInput = Read-Default "LanceDB port" "50051"
-        if (-not (Test-ValidPort $lancePortInput)) {
-            Write-Info "Invalid LanceDB port."
-            continue
-        }
-        $script:LanceDbPort = [int]$lancePortInput
-
-        $duckPortInput = Read-Default "DuckDB port" "50052"
-        if (-not (Test-ValidPort $duckPortInput)) {
-            Write-Info "Invalid DuckDB port."
-            continue
-        }
-        $script:DuckDbPort = [int]$duckPortInput
-
-        if ($script:LanceDbPort -eq $script:DuckDbPort) {
-            Write-Info "LanceDB and DuckDB must use different ports."
-            continue
-        }
-
-        return
-    }
-}
-
 function Invoke-TextDownload {
     param([string]$Url)
+
     try {
         return (Invoke-WebRequest -UseBasicParsing -Uri $Url).Content
     } catch {
@@ -441,44 +194,23 @@ function Get-RemoteScriptVersion {
 
     $content = Invoke-TextDownload "$RawBaseUrl/$ScriptName"
     if (-not $content) { return $null }
+
     $match = [regex]::Match($content, $Pattern)
     if ($match.Success) {
         return $match.Groups[1].Value
     }
-    return $null
-}
 
-function Try-GetLatestReleaseTag {
-    try {
-        return (Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/releases/latest").tag_name
-    } catch {
-        return $null
-    }
+    return $null
 }
 
 function Show-UpdateNotice {
     $remoteScriptVersion = Get-RemoteScriptVersion -ScriptName "install.ps1" -Pattern '\$ScriptVersion\s*=\s*"([^"]+)"'
-    $latestTag = Try-GetLatestReleaseTag
 
     if ($remoteScriptVersion -and (Compare-VersionStrings $remoteScriptVersion $ScriptVersion) -gt 0) {
         Write-Info "A newer installer script is available: $remoteScriptVersion (current: $ScriptVersion)."
     } else {
         Write-Info "Installer script version: $ScriptVersion"
     }
-
-    if ($latestTag) {
-        Write-Info "Latest release tag: $latestTag"
-    }
-}
-
-function Get-LatestRelease {
-    Write-Step "Resolving the latest release information"
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/releases/latest"
-    if (-not $release.tag_name) {
-        throw "Unable to resolve the latest release tag."
-    }
-    $script:ReleaseTag = $release.tag_name
-    return $release
 }
 
 function Download-FileWithProgress {
@@ -490,12 +222,81 @@ function Download-FileWithProgress {
 
     Write-Info "Downloading $Label"
     Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $OutFile
-    $sizeText = ""
-    if (Test-Path $OutFile) {
-        $fileInfo = Get-Item $OutFile
-        $sizeText = " ({0:N2} MB)" -f ($fileInfo.Length / 1MB)
+}
+
+function Get-ScriptVersionFromFile {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) { return $null }
+
+    $content = Get-Content $Path -Raw
+    $match = [regex]::Match($content, '\$ScriptVersion\s*=\s*"([^"]+)"')
+    if ($match.Success) {
+        return $match.Groups[1].Value
     }
-    Write-Info "Finished downloading $Label$sizeText"
+
+    return $null
+}
+
+function Install-ManagerScript {
+    $sourcePath = $PSCommandPath
+    $sourceDir = $null
+    $binDir = Join-Path $script:InstallDir "bin"
+    $managerScript = Join-Path $binDir "vldb.ps1"
+
+    Write-Step "Installing manager script"
+    New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+
+    if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
+        $sourceDir = Split-Path -Parent $sourcePath
+    }
+
+    if ($sourceDir -and (Test-Path (Join-Path $sourceDir "vldb.ps1"))) {
+        Write-Step "Copying bundled manager script"
+        Copy-Item (Join-Path $sourceDir "vldb.ps1") $managerScript -Force
+    } else {
+        Write-Step "Downloading manager script from GitHub"
+        Download-FileWithProgress -Url "$RawBaseUrl/vldb.ps1" -OutFile $managerScript -Label "vldb.ps1"
+    }
+
+    $detectedVersion = Get-ScriptVersionFromFile $managerScript
+    if ($detectedVersion) {
+        $script:ManagerScriptVersion = $detectedVersion
+    }
+}
+
+function Write-GlobalConfig {
+    $existingConfig = Read-Config
+    $lanceRoot = if ($existingConfig -and $existingConfig.lancedb_root) {
+        [string]$existingConfig.lancedb_root
+    } else {
+        Join-Path $script:GlobalHome "lancedb"
+    }
+    $duckRoot = if ($existingConfig -and $existingConfig.duckdb_root) {
+        [string]$existingConfig.duckdb_root
+    } else {
+        Join-Path $script:GlobalHome "duckdb"
+    }
+    $releaseTag = if ($existingConfig -and $existingConfig.release_tag) {
+        [string]$existingConfig.release_tag
+    } else {
+        $null
+    }
+    $initialized = $false
+    if ($existingConfig -and $null -ne $existingConfig.initialized) {
+        $initialized = [bool]$existingConfig.initialized
+    }
+
+    New-Item -ItemType Directory -Force -Path $script:GlobalHome | Out-Null
+    @{
+        language = if ($existingConfig -and $existingConfig.language) { [string]$existingConfig.language } else { "en" }
+        install_dir = $script:InstallDir
+        release_tag = $releaseTag
+        script_version = $script:ManagerScriptVersion
+        lancedb_root = $lanceRoot
+        duckdb_root = $duckRoot
+        initialized = $initialized
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $script:GlobalConfig
 }
 
 function Refresh-CurrentSessionEnvironment {
@@ -524,179 +325,10 @@ function Refresh-CurrentSessionEnvironment {
     }
 }
 
-function Invoke-InstalledControllerIfPresent {
-    $existingInstallDir = Get-ExistingInstallDir
-    if (-not $existingInstallDir) {
-        return $false
-    }
-
-    $controllerPath = Join-Path $existingInstallDir "bin\vldb.ps1"
-    if (-not (Test-Path $controllerPath)) {
-        return $false
-    }
-
-    Write-Info "An existing VulcanLocalDB installation was detected at $existingInstallDir."
-    Write-Info "Launching the local manager script so it can check for updates."
-    & $controllerPath -FromInstaller
-    return $true
-}
-
-function Get-TargetTriple {
-    $arch = $env:PROCESSOR_ARCHITECTURE
-    switch ($arch) {
-        "AMD64" { return "x86_64-pc-windows-msvc" }
-        "ARM64" { return "aarch64-pc-windows-msvc" }
-        default { throw "Unsupported Windows CPU architecture." }
-    }
-}
-
-function Download-AssetPair {
-    param(
-        [string]$Service,
-        [string]$Tag,
-        [string]$Target,
-        [string]$TempDir,
-        [object]$Release
-    )
-
-    $archiveName = "$Service-$Tag-$Target.zip"
-    $checksumName = "$archiveName.sha256"
-    $archivePath = Join-Path $TempDir $archiveName
-    $checksumPath = Join-Path $TempDir $checksumName
-    $baseUrl = "$RepoUrl/releases/download/$Tag"
-
-    if ($Release.assets.name -notcontains $archiveName) {
-        throw "The current release does not provide $archiveName."
-    }
-
-    Download-FileWithProgress -Url "$baseUrl/$archiveName" -OutFile $archivePath -Label $archiveName
-    Download-FileWithProgress -Url "$baseUrl/$checksumName" -OutFile $checksumPath -Label $checksumName
-
-    Write-Step "Verifying checksum for $archiveName"
-    $expected = (Get-Content $checksumPath -Raw).Split(" ")[0].Trim().ToLowerInvariant()
-    $actual = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
-    if ($expected -ne $actual) {
-        throw "Checksum verification failed for $archiveName."
-    }
-
-    return $archivePath
-}
-
-function Extract-Binary {
-    param(
-        [string]$ArchivePath,
-        [string]$Service,
-        [string]$TempDir
-    )
-
-    $extractDir = Join-Path $TempDir "extract-$Service"
-    Write-Step "Extracting $Service package"
-    if (Test-Path $extractDir) {
-        Remove-Item -Recurse -Force $extractDir
-    }
-    New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-    Expand-Archive -Path $ArchivePath -DestinationPath $extractDir -Force
-
-    $binary = Get-ChildItem -Path $extractDir -Recurse -File -Filter "$Service.exe" | Select-Object -First 1
-    $example = Get-ChildItem -Path $extractDir -Recurse -File -Filter "$Service.json.example" | Select-Object -First 1
-
-    if (-not $binary -or -not $example) {
-        throw "The archive layout is missing the expected binary or example config."
-    }
-
-    Write-Step "Installing $Service binary and example config"
-    New-Item -ItemType Directory -Force -Path (Join-Path $script:InstallDir "bin") | Out-Null
-    New-Item -ItemType Directory -Force -Path (Join-Path $script:InstallDir "share\examples") | Out-Null
-
-    Copy-Item $binary.FullName (Join-Path $script:InstallDir "bin\$Service.exe") -Force
-    Copy-Item $example.FullName (Join-Path $script:InstallDir "share\examples\$Service.json.example") -Force
-}
-
-function Write-LanceDbConfig {
-    param([string]$Instance, [string]$BindHost, [int]$Port, [string]$DataPath)
-    Write-Step "Writing LanceDB config for instance '$Instance'"
-    $configDir = Join-Path $script:InstallDir "config"
-    New-Item -ItemType Directory -Force -Path $configDir, $DataPath | Out-Null
-
-    @{
-        host = $BindHost
-        port = $Port
-        db_path = $DataPath
-    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $configDir "vldb-lancedb-$Instance.json")
-}
-
-function Write-DuckDbConfig {
-    param([string]$Instance, [string]$BindHost, [int]$Port, [string]$DataPath)
-    Write-Step "Writing DuckDB config for instance '$Instance'"
-    $configDir = Join-Path $script:InstallDir "config"
-    New-Item -ItemType Directory -Force -Path $configDir, (Split-Path -Parent $DataPath) | Out-Null
-
-    @{
-        host = $BindHost
-        port = $Port
-        db_path = $DataPath
-        memory_limit = "2GB"
-        threads = 4
-    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $configDir "vldb-duckdb-$Instance.json")
-}
-
-function Get-ScriptVersionFromFile {
-    param([string]$Path)
-
-    if (-not (Test-Path $Path)) { return $null }
-    $content = Get-Content $Path -Raw
-    $match = [regex]::Match($content, '\$ScriptVersion\s*=\s*"([^"]+)"')
-    if ($match.Success) {
-        return $match.Groups[1].Value
-    }
-    return $null
-}
-
-function Write-GlobalConfig {
-    Write-Step "Writing global installer config"
-    New-Item -ItemType Directory -Force -Path $script:GlobalHome | Out-Null
-    @{
-        language = "en"
-        install_dir = $script:InstallDir
-        release_tag = $script:ReleaseTag
-        script_version = $script:ManagerScriptVersion
-        lancedb_root = $script:LanceDbRoot
-        duckdb_root = $script:DuckDbRoot
-    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $script:GlobalConfig
-}
-
-function Install-ManagerScripts {
-    $sourcePath = $PSCommandPath
-    $sourceDir = $null
-    $binDir = Join-Path $script:InstallDir "bin"
-    $managerScript = Join-Path $binDir "vldb.ps1"
-    Write-Step "Installing manager scripts"
-    New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-
-    if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
-        $sourceDir = Split-Path -Parent $sourcePath
-    }
-
-    if ($sourceDir -and (Test-Path (Join-Path $sourceDir "vldb.ps1")) -and (Test-Path (Join-Path $sourceDir "vldb.cmd"))) {
-        Write-Step "Copying bundled manager scripts"
-        Copy-Item (Join-Path $sourceDir "vldb.ps1") $managerScript -Force
-        Copy-Item (Join-Path $sourceDir "vldb.cmd") (Join-Path $binDir "vldb.cmd") -Force
-    } else {
-        Write-Step "Downloading manager scripts from GitHub"
-        Download-FileWithProgress -Url "$RawBaseUrl/vldb.ps1" -OutFile $managerScript -Label "vldb.ps1"
-        Download-FileWithProgress -Url "$RawBaseUrl/vldb.cmd" -OutFile (Join-Path $binDir "vldb.cmd") -Label "vldb.cmd"
-    }
-
-    $detectedVersion = Get-ScriptVersionFromFile $managerScript
-    if ($detectedVersion) {
-        $script:ManagerScriptVersion = $detectedVersion
-    }
-    Write-Info "Manager script version: $($script:ManagerScriptVersion)"
-}
-
 function Ensure-PathExports {
     $binDir = Join-Path $script:InstallDir "bin"
     Write-Step "Updating user PATH and environment variables"
+
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $parts = @()
     if ($currentPath) {
@@ -711,209 +343,48 @@ function Ensure-PathExports {
     [Environment]::SetEnvironmentVariable("VULCANLOCALDB_HOME", $script:InstallDir, "User")
     [Environment]::SetEnvironmentVariable("VULCANLOCALDB_BIN", $binDir, "User")
     Refresh-CurrentSessionEnvironment
-    Write-Info "Current shell environment refreshed."
 }
 
-function Get-ServiceName {
-    param([string]$Service, [string]$Instance)
-    return "VulcanLocalDB-$Service-$Instance"
-}
-
-function Get-WinSWTemplatePath {
-    return (Join-Path $script:InstallDir "tools\winsw\winsw-template.exe")
-}
-
-function Get-ServiceWrapperDir {
-    param([string]$Service, [string]$Instance)
-    return (Join-Path $script:RunDir "services\$Service-$Instance")
-}
-
-function Get-ServiceWrapperExePath {
-    param([string]$Service, [string]$Instance)
-    $serviceName = Get-ServiceName -Service $Service -Instance $Instance
-    return (Join-Path (Get-ServiceWrapperDir -Service $Service -Instance $Instance) "$serviceName.exe")
-}
-
-function Get-ServiceWrapperConfigPath {
-    param([string]$Service, [string]$Instance)
-    $serviceName = Get-ServiceName -Service $Service -Instance $Instance
-    return (Join-Path (Get-ServiceWrapperDir -Service $Service -Instance $Instance) "$serviceName.xml")
-}
-
-function Escape-XmlText {
-    param([string]$Value)
-    return [System.Security.SecurityElement]::Escape($Value)
-}
-
-function Ensure-ServiceBuilderInstalled {
-    $templatePath = Get-WinSWTemplatePath
-    if (Test-Path $templatePath) {
-        return $templatePath
+function Invoke-InstalledManagerIfPresent {
+    $existingInstallDir = Get-ExistingInstallDir
+    if (-not $existingInstallDir) {
+        return $false
     }
 
-    if (-not (Confirm-Choice "Windows service builder WinSW is required. Download and install it now?" "Y")) {
-        throw "Service registration was cancelled because WinSW is missing."
+    $managerPath = Join-Path $existingInstallDir "bin\vldb.ps1"
+    if (-not (Test-Path $managerPath)) {
+        return $false
     }
 
-    if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
-        throw "The built-in Windows service builder bootstrap currently supports only x64 Windows."
-    }
-
-    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("winsw-" + [guid]::NewGuid().ToString("N"))
-    $downloadPath = Join-Path $tempDir "WinSW-x64.exe"
-
-    try {
-        Write-Step "Downloading WinSW service wrapper"
-        New-Item -ItemType Directory -Force -Path $tempDir, (Split-Path -Parent $templatePath) | Out-Null
-        Download-FileWithProgress -Url "https://github.com/winsw/winsw/releases/download/$WinSWVersion/WinSW-x64.exe" -OutFile $downloadPath -Label "WinSW-x64.exe"
-        Copy-Item $downloadPath $templatePath -Force
-    } finally {
-        Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
-    }
-
-    return $templatePath
+    Write-Info "An existing VulcanLocalDB installation was detected at $existingInstallDir."
+    Write-Info "Launching the local manager script."
+    & $managerPath -FromInstaller
+    return $true
 }
 
-function Remove-LegacyStartupTask {
-    param([string]$Service, [string]$Instance)
-
-    Unregister-ScheduledTask -TaskName (Get-ServiceName -Service $Service -Instance $Instance) -Confirm:$false -ErrorAction SilentlyContinue
-    Remove-Item (Join-Path $script:RunDir "$Service-$Instance.cmd") -Force -ErrorAction SilentlyContinue
-}
-
-function Write-ServiceWrapperConfig {
-    param([string]$Service, [string]$Instance)
-
-    Write-Step "Preparing Windows service wrapper for $Service ($Instance)"
-    $serviceName = Get-ServiceName -Service $Service -Instance $Instance
-    $wrapperDir = Get-ServiceWrapperDir -Service $Service -Instance $Instance
-    $wrapperExe = Get-ServiceWrapperExePath -Service $Service -Instance $Instance
-    $wrapperConfig = Get-ServiceWrapperConfigPath -Service $Service -Instance $Instance
-    $binaryPath = Join-Path $script:InstallDir "bin\$Service.exe"
-    $jsonConfig = Join-Path $script:InstallDir "config\$Service-$Instance.json"
-    $logDir = Join-Path $script:GlobalHome "logs\$Service-$Instance"
-
-    New-Item -ItemType Directory -Force -Path $wrapperDir, $logDir | Out-Null
-    Copy-Item (Ensure-ServiceBuilderInstalled) $wrapperExe -Force
-
-    $escapedServiceName = Escape-XmlText $serviceName
-    $escapedDisplayName = Escape-XmlText ("VulcanLocalDB $Service $Instance")
-    $escapedBinary = Escape-XmlText $binaryPath
-    $escapedConfig = Escape-XmlText $jsonConfig
-    $escapedWorkDir = Escape-XmlText $script:InstallDir
-    $escapedLogDir = Escape-XmlText $logDir
-
-    @"
-<service>
-  <id>$escapedServiceName</id>
-  <name>$escapedDisplayName</name>
-  <description>$escapedDisplayName</description>
-  <executable>$escapedBinary</executable>
-  <arguments>--config &quot;$escapedConfig&quot;</arguments>
-  <workingdirectory>$escapedWorkDir</workingdirectory>
-  <startmode>Automatic</startmode>
-  <stoptimeout>15 sec</stoptimeout>
-  <onfailure action="restart" delay="10 sec" />
-  <onfailure action="restart" delay="10 sec" />
-  <onfailure action="restart" delay="30 sec" />
-  <logpath>$escapedLogDir</logpath>
-  <log mode="roll" />
-</service>
-"@ | Set-Content -Encoding UTF8 $wrapperConfig
-
-    return $wrapperExe
-}
-
-function Register-WindowsService {
-    param([string]$Service, [string]$Instance)
-
-    Write-Step "Registering Windows service for $Service ($Instance)"
-    $wrapperExe = Write-ServiceWrapperConfig -Service $Service -Instance $Instance
-    Remove-LegacyStartupTask -Service $Service -Instance $Instance
-
-    & $wrapperExe stop 2>$null
-    & $wrapperExe uninstall 2>$null
-    & $wrapperExe install
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to install the Windows service."
+function Launch-InstalledManager {
+    $managerPath = Join-Path $script:InstallDir "bin\vldb.ps1"
+    if (-not (Test-Path $managerPath)) {
+        throw "Manager script was not installed successfully."
     }
 
-    Write-Step "Starting Windows service for $Service ($Instance)"
-    & $wrapperExe start
-    if ($LASTEXITCODE -ne 0) {
-        throw "The Windows service was installed, but it failed to start."
-    }
-}
-
-function Unregister-WindowsService {
-    param([string]$Service, [string]$Instance)
-
-    $wrapperExe = Get-ServiceWrapperExePath -Service $Service -Instance $Instance
-    Remove-LegacyStartupTask -Service $Service -Instance $Instance
-
-    if (Test-Path $wrapperExe) {
-        & $wrapperExe stop 2>$null
-        & $wrapperExe uninstall 2>$null
-    }
-
-    Remove-Item (Get-ServiceWrapperDir -Service $Service -Instance $Instance) -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Step "Starting manager"
+    & $managerPath -FromInstaller
 }
 
 function Main {
-    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("vulcanlocaldb-" + [guid]::NewGuid().ToString("N"))
-    Write-Step "Creating temporary workspace at $tempDir"
-    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+    Show-Banner
+    Show-UpdateNotice
 
-    try {
-        Show-Banner
-        Show-UpdateNotice
-
-        if (Invoke-InstalledControllerIfPresent) {
-            return
-        }
-
-        Choose-InstallMode
-        Choose-InstallDir
-        Choose-DataRoots
-
-        if ($script:InstallMode -eq "full") {
-            Choose-NetworkSettings
-
-            $release = Get-LatestRelease
-            $target = Get-TargetTriple
-
-            Write-Info "Resolved release tag: $ReleaseTag"
-
-            $lancedbArchive = Download-AssetPair -Service "vldb-lancedb" -Tag $ReleaseTag -Target $target -TempDir $tempDir -Release $release
-            $duckdbArchive = Download-AssetPair -Service "vldb-duckdb" -Tag $ReleaseTag -Target $target -TempDir $tempDir -Release $release
-
-            Extract-Binary -ArchivePath $lancedbArchive -Service "vldb-lancedb" -TempDir $tempDir
-            Extract-Binary -ArchivePath $duckdbArchive -Service "vldb-duckdb" -TempDir $tempDir
-
-            Write-LanceDbConfig -Instance "default" -BindHost $HostBind -Port $LanceDbPort -DataPath (Get-DefaultInstanceDataPath -Service "vldb-lancedb" -Instance "default")
-            Write-DuckDbConfig -Instance "default" -BindHost $HostBind -Port $DuckDbPort -DataPath (Get-DefaultInstanceDataPath -Service "vldb-duckdb" -Instance "default")
-        }
-
-        Install-ManagerScripts
-        Write-GlobalConfig
-        Ensure-PathExports
-
-        if ($script:InstallMode -eq "full" -and (Confirm-Choice "Register both services for auto start and auto restart?" "N")) {
-            Write-Step "Preparing service registration"
-            Register-WindowsService -Service "vldb-lancedb" -Instance "default"
-            Register-WindowsService -Service "vldb-duckdb" -Instance "default"
-        }
-
-        if ($script:InstallMode -eq "full") {
-            Write-Info "Installation completed."
-        } else {
-            Write-Info "Manager script installation completed."
-        }
-        Write-Info "Launcher: $InstallDir\bin\vldb.cmd"
-    } finally {
-        Write-Step "Cleaning temporary workspace"
-        Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
+    if (Invoke-InstalledManagerIfPresent) {
+        return
     }
+
+    Choose-InstallDir
+    Install-ManagerScript
+    Write-GlobalConfig
+    Ensure-PathExports
+    Launch-InstalledManager
 }
 
 Main
