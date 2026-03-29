@@ -300,7 +300,7 @@ fn column_to_field(column: &ColumnDef) -> Result<Field, Status> {
             return Err(Status::invalid_argument(format!(
                 "column '{}' has unspecified type",
                 column.name
-            )))
+            )));
         }
     };
 

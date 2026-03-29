@@ -3,10 +3,10 @@ use crate::pb::duck_db_service_server::DuckDbService;
 use crate::pb::{ExecuteRequest, ExecuteResponse, QueryJsonResponse, QueryRequest, QueryResponse};
 use arrow::ipc::writer::StreamWriter;
 use bytes::Bytes;
+use duckdb::Connection;
 use duckdb::types::{
     TimeUnit as DuckTimeUnit, ToSql, Value as DuckValue, ValueRef as DuckValueRef,
 };
-use duckdb::Connection;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use std::io;
 use std::io::Write;

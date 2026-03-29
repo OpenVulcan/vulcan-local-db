@@ -5,9 +5,9 @@ pub mod pb {
     tonic::include_proto!("vldb.duckdb.v1");
 }
 
-use crate::config::{load_config, BoxError};
+use crate::config::{BoxError, load_config};
 use crate::pb::duck_db_service_server::DuckDbServiceServer;
-use crate::service::{apply_connection_pragmas, DuckDbGrpcService};
+use crate::service::{DuckDbGrpcService, apply_connection_pragmas};
 use duckdb::Connection;
 use tonic::transport::Server;
 

@@ -1,6 +1,10 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc_path = protoc_bin_vendored::protoc_bin_path()?;
-    std::env::set_var("PROTOC", protoc_path);
+    // SAFETY: the build script sets PROTOC once during process startup, before any
+    // threads are spawned or foreign code observes the environment.
+    unsafe {
+        std::env::set_var("PROTOC", protoc_path);
+    }
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         println!("cargo:rustc-link-lib=Rstrtmgr");

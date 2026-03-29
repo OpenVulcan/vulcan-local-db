@@ -41,12 +41,7 @@ impl ResolvedConfig {
 
 pub fn load() -> Result<ResolvedConfig, Box<dyn Error>> {
     let explicit_config = parse_config_arg()?;
-
-    let config_path = if let Some(path) = explicit_config {
-        Some(path)
-    } else {
-        find_default_config_file()?
-    };
+    let config_path = explicit_config.or(find_default_config_file()?);
 
     let (config, source) = match config_path {
         Some(path) => {
@@ -89,11 +84,11 @@ fn parse_config_arg() -> Result<Option<PathBuf>, Box<dyn Error>> {
 fn find_default_config_file() -> Result<Option<PathBuf>, Box<dyn Error>> {
     let mut candidates = Vec::new();
 
-    if let Ok(current_exe) = env::current_exe() {
-        if let Some(exe_dir) = current_exe.parent() {
-            candidates.push(exe_dir.join(DEFAULT_CONFIG_FILE));
-            candidates.push(exe_dir.join(LEGACY_CONFIG_FILE));
-        }
+    if let Ok(current_exe) = env::current_exe()
+        && let Some(exe_dir) = current_exe.parent()
+    {
+        candidates.push(exe_dir.join(DEFAULT_CONFIG_FILE));
+        candidates.push(exe_dir.join(LEGACY_CONFIG_FILE));
     }
 
     let current_dir = env::current_dir()?;
@@ -129,10 +124,10 @@ fn expand_tilde(raw: &str) -> String {
         return home_dir_string().unwrap_or_else(|| raw.to_string());
     }
 
-    if let Some(rest) = raw.strip_prefix("~/") {
-        if let Some(home) = home_dir_string() {
-            return PathBuf::from(home).join(rest).to_string_lossy().to_string();
-        }
+    if let Some(rest) = raw.strip_prefix("~/")
+        && let Some(home) = home_dir_string()
+    {
+        return PathBuf::from(home).join(rest).to_string_lossy().to_string();
     }
 
     raw.to_string()

@@ -128,12 +128,12 @@ fn default_search_paths() -> Result<Vec<PathBuf>, BoxError> {
     let cwd = env::current_dir()?;
     let mut candidates = vec![cwd.join(PRIMARY_CONFIG_NAME)];
 
-    if let Ok(exe) = env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let exe_config = dir.join(PRIMARY_CONFIG_NAME);
-            if exe_config != candidates[0] {
-                candidates.push(exe_config);
-            }
+    if let Ok(exe) = env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let exe_config = dir.join(PRIMARY_CONFIG_NAME);
+        if exe_config != candidates[0] {
+            candidates.push(exe_config);
         }
     }
 
@@ -159,15 +159,9 @@ fn expand_tilde(path: &Path) -> Result<PathBuf, BoxError> {
         return Ok(home);
     }
 
-    if let Some(rest) = raw.strip_prefix("~/") {
-        let home =
-            home_dir().ok_or_else(|| invalid_input("cannot expand '~/': HOME is not set"))?;
-        return Ok(home.join(rest));
-    }
-
-    if let Some(rest) = raw.strip_prefix("~\\") {
-        let home =
-            home_dir().ok_or_else(|| invalid_input("cannot expand '~\\': HOME is not set"))?;
+    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+        let home = home_dir()
+            .ok_or_else(|| invalid_input("cannot expand '~/' or '~\\': HOME is not set"))?;
         return Ok(home.join(rest));
     }
 

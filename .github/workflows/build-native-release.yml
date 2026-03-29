@@ -1,0 +1,253 @@
+name: Build Native Release Binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      duckdb_linux_runner:
+        description: "指派 vldb-duckdb 的 Linux x64 原生编译节点"
+        required: true
+        default: "ubuntu-24.04"
+        type: choice
+        options:
+          - "9950x"
+          - "proart"
+          - "ubuntu-24.04"
+      lancedb_linux_runner:
+        description: "指派 vldb-lancedb 的 Linux x64 原生编译节点"
+        required: true
+        default: "ubuntu-24.04"
+        type: choice
+        options:
+          - "9950x"
+          - "proart"
+          - "ubuntu-24.04"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: native-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.service }} • ${{ matrix.target }}
+    runs-on: ${{ matrix.runner_mode == 'dynamic' && (matrix.runner == 'ubuntu-24.04' && 'ubuntu-24.04' || fromJSON(format('["self-hosted", "{0}"]', matrix.runner))) || matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: vldb-lancedb
+            binary: vldb-lancedb
+            runner: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.lancedb_linux_runner || 'ubuntu-24.04' }}
+            runner_mode: dynamic
+            target: x86_64-unknown-linux-gnu
+          - service: vldb-lancedb
+            binary: vldb-lancedb
+            runner: ubuntu-24.04-arm
+            runner_mode: fixed
+            target: aarch64-unknown-linux-gnu
+          - service: vldb-lancedb
+            binary: vldb-lancedb
+            runner: macos-13
+            runner_mode: fixed
+            target: x86_64-apple-darwin
+          - service: vldb-lancedb
+            binary: vldb-lancedb
+            runner: macos-14
+            runner_mode: fixed
+            target: aarch64-apple-darwin
+          - service: vldb-lancedb
+            binary: vldb-lancedb
+            runner: windows-latest
+            runner_mode: fixed
+            target: x86_64-pc-windows-msvc
+          - service: vldb-duckdb
+            binary: vldb-duckdb
+            runner: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.duckdb_linux_runner || 'ubuntu-24.04' }}
+            runner_mode: dynamic
+            target: x86_64-unknown-linux-gnu
+          - service: vldb-duckdb
+            binary: vldb-duckdb
+            runner: ubuntu-24.04-arm
+            runner_mode: fixed
+            target: aarch64-unknown-linux-gnu
+          - service: vldb-duckdb
+            binary: vldb-duckdb
+            runner: macos-13
+            runner_mode: fixed
+            target: x86_64-apple-darwin
+          - service: vldb-duckdb
+            binary: vldb-duckdb
+            runner: macos-14
+            runner_mode: fixed
+            target: aarch64-apple-darwin
+          - service: vldb-duckdb
+            binary: vldb-duckdb
+            runner: windows-latest
+            runner_mode: fixed
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          missing=0
+          for pkg in pkg-config cmake clang protoc; do
+            if ! command -v "$pkg" >/dev/null 2>&1; then
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -eq 1 ] || ! dpkg -s libssl-dev >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y pkg-config cmake clang libssl-dev protobuf-compiler
+          fi
+
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: |
+          missing=0
+          for tool in cmake protoc; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -eq 1 ]; then
+            brew update
+            brew install cmake protobuf
+          fi
+
+      - name: Install Windows build dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $missing = @()
+          foreach ($tool in @('cmake', 'protoc')) {
+            if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
+              $missing += $tool
+            }
+          }
+
+          if ($missing.Count -gt 0) {
+            choco install -y cmake protoc --no-progress
+          }
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.94.0
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.service }} -> target
+          cache-on-failure: true
+          key: ${{ matrix.service }}-${{ matrix.target }}-${{ hashFiles(format('{0}/Cargo.lock', matrix.service)) }}
+
+      - name: Build release binary
+        working-directory: ${{ matrix.service }}
+        env:
+          CARGO_TERM_COLOR: always
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Package release archive
+        id: package
+        shell: pwsh
+        env:
+          SERVICE: ${{ matrix.service }}
+          BINARY: ${{ matrix.binary }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $serviceDir = Join-Path $env:GITHUB_WORKSPACE $env:SERVICE
+          $cargoToml = Join-Path $serviceDir 'Cargo.toml'
+          $content = Get-Content $cargoToml -Raw
+          if ($content -match '(?m)^version\s*=\s*"([^"]+)"') {
+            $version = $Matches[1]
+          } else {
+            $version = 'unknown'
+          }
+          $ext = if ($env:RUNNER_OS -eq 'Windows') { '.exe' } else { '' }
+          $binPath = Join-Path $serviceDir "target/$($env:TARGET)/release/$($env:BINARY)$ext"
+          $packageName = "$($env:BINARY)-v$version-$($env:TARGET)"
+          $distDir = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          $stageDir = Join-Path $distDir $packageName
+          $archivePath = Join-Path $distDir "$packageName.zip"
+          $checksumPath = "$archivePath.sha256"
+
+          if (!(Test-Path $binPath)) {
+            Write-Error "Binary not found at $binPath"
+            exit 1
+          }
+
+          New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+
+          Copy-Item $binPath (Join-Path $stageDir "$($env:BINARY)$ext")
+
+          $exampleFile = Join-Path $serviceDir "$($env:BINARY).json.example"
+          if (Test-Path $exampleFile) {
+            Copy-Item $exampleFile $stageDir
+          }
+
+          foreach ($fileName in @('README.md', 'LICENSE')) {
+            $localPath = Join-Path $serviceDir $fileName
+            $rootPath = Join-Path $env:GITHUB_WORKSPACE $fileName
+            if (Test-Path $localPath) {
+              Copy-Item $localPath $stageDir
+            } elseif (Test-Path $rootPath) {
+              Copy-Item $rootPath $stageDir
+            }
+          }
+
+          if (Test-Path $archivePath) {
+            Remove-Item $archivePath -Force
+          }
+          if (Test-Path $checksumPath) {
+            Remove-Item $checksumPath -Force
+          }
+
+          Compress-Archive -Path (Join-Path $stageDir '*') -DestinationPath $archivePath -CompressionLevel Optimal
+
+          $hash = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLower()
+          "$hash  $(Split-Path -Leaf $archivePath)" | Out-File -FilePath $checksumPath -Encoding ascii -NoNewline
+
+          "archive=$archivePath" >> $env:GITHUB_OUTPUT
+          "checksum=$checksumPath" >> $env:GITHUB_OUTPUT
+
+      - name: Upload packaged binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary }}-${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download packaged binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
