@@ -28,14 +28,62 @@ try {
 } catch {
 }
 
+function Write-ColorLine {
+    param(
+        [string]$Message,
+        [ConsoleColor]$Color = [ConsoleColor]::Gray
+    )
+
+    try {
+        Write-Host $Message -ForegroundColor $Color
+    } catch {
+        Write-Host $Message
+    }
+}
+
 function Write-Info {
     param([string]$Message)
-    Write-Host $Message
+    Write-ColorLine -Message $Message -Color Cyan
 }
 
 function Write-Step {
     param([string]$Message)
-    Write-Host ("[Step] " + $Message)
+    Write-ColorLine -Message ("[Step] " + $Message) -Color Yellow
+}
+
+function Write-Warn {
+    param([string]$Message)
+    Write-ColorLine -Message $Message -Color Red
+}
+
+function Write-Success {
+    param([string]$Message)
+    Write-ColorLine -Message $Message -Color Green
+}
+
+function Write-Running {
+    param([string]$Message)
+    Write-ColorLine -Message ("Running " + $Message + "...") -Color Yellow
+}
+
+function Write-Done {
+    param([string]$Message)
+    Write-ColorLine -Message ($Message + " completed.") -Color Green
+}
+
+function Invoke-MenuAction {
+    param(
+        [string]$Label,
+        [scriptblock]$Action
+    )
+
+    Write-Running $Label
+    try {
+        & $Action
+        Write-Done $Label
+    } catch {
+        Write-Warn ($Label + " failed: " + $_.Exception.Message)
+    }
 }
 
 function Confirm-Choice {
@@ -539,6 +587,17 @@ function Test-ServiceRunningByName {
     return $service -and $service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running
 }
 
+function Wait-ForServiceStatus {
+    param(
+        [string]$ServiceName,
+        [System.ServiceProcess.ServiceControllerStatus]$Status,
+        [int]$TimeoutSeconds = 20
+    )
+
+    $service = Get-Service -Name $ServiceName -ErrorAction Stop
+    $service.WaitForStatus($Status, [TimeSpan]::FromSeconds($TimeoutSeconds))
+}
+
 function Get-PortConflictMessage {
     param(
         [int]$CandidatePort,
@@ -838,10 +897,6 @@ function Ensure-ServiceBuilderInstalled {
         return $templatePath
     }
 
-    if (-not (Confirm-Choice "Windows service builder WinSW is required. Download and install it now?" "Y")) {
-        throw "Service registration was cancelled because WinSW is missing."
-    }
-
     if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
         throw "The built-in Windows service builder bootstrap currently supports only x64 Windows."
     }
@@ -850,6 +905,7 @@ function Ensure-ServiceBuilderInstalled {
     $downloadPath = Join-Path $tempDir "WinSW-x64.exe"
 
     try {
+        Write-Step "Downloading WinSW service wrapper to tools directory"
         New-Item -ItemType Directory -Force -Path $tempDir, (Split-Path -Parent $templatePath) | Out-Null
         Download-FileWithProgress -Url "https://github.com/winsw/winsw/releases/download/$WinSWVersion/WinSW-x64.exe" -OutFile $downloadPath -Label "WinSW-x64.exe"
         Copy-Item $downloadPath $templatePath -Force
@@ -1000,6 +1056,7 @@ function Start-InstanceService {
     }
 
     Start-Service -Name $registeredName -ErrorAction SilentlyContinue
+    Wait-ForServiceStatus -ServiceName $registeredName -Status ([System.ServiceProcess.ServiceControllerStatus]::Running)
 }
 
 function Stop-InstanceService {
@@ -1012,6 +1069,7 @@ function Stop-InstanceService {
     }
 
     Stop-Service -Name $registeredName -Force -ErrorAction SilentlyContinue
+    Wait-ForServiceStatus -ServiceName $registeredName -Status ([System.ServiceProcess.ServiceControllerStatus]::Stopped)
 }
 
 function Write-ServiceConfig {
@@ -1485,21 +1543,21 @@ function Uninstall-All {
 
 function Show-Menu {
     Write-Host ""
-    Write-Host "===================================="
-    Write-Host "VulcanLocalDB Manager Script"
-    Write-Host "===================================="
-    Write-Host "1. Check for updates"
-    Write-Host "2. Show installed instances"
-    Write-Host "3. Modify host, port, data path or service name"
-    Write-Host "4. Install a single service instance"
-    Write-Host "5. Start a single service instance"
-    Write-Host "6. Stop a single service instance"
-    Write-Host "7. Start all service instances"
-    Write-Host "8. Stop all service instances"
-    Write-Host "9. Uninstall a single service instance"
-    Write-Host "10. Remove only the vldb manager command"
-    Write-Host "11. Uninstall everything"
-    Write-Host "0. Exit"
+    Write-ColorLine -Message "====================================" -Color DarkCyan
+    Write-ColorLine -Message "VulcanLocalDB Manager Script" -Color Magenta
+    Write-ColorLine -Message "====================================" -Color DarkCyan
+    Write-ColorLine -Message "1. Check for updates" -Color White
+    Write-ColorLine -Message "2. Show installed instances" -Color White
+    Write-ColorLine -Message "3. Modify host, port, data path or service name" -Color White
+    Write-ColorLine -Message "4. Install a single service instance" -Color White
+    Write-ColorLine -Message "5. Start a single service instance" -Color White
+    Write-ColorLine -Message "6. Stop a single service instance" -Color White
+    Write-ColorLine -Message "7. Start all service instances" -Color White
+    Write-ColorLine -Message "8. Stop all service instances" -Color White
+    Write-ColorLine -Message "9. Uninstall a single service instance" -Color White
+    Write-ColorLine -Message "10. Remove only the vldb manager command" -Color White
+    Write-ColorLine -Message "11. Uninstall everything" -Color White
+    Write-ColorLine -Message "0. Exit" -Color White
 }
 
 Resolve-InstallDir
@@ -1517,29 +1575,42 @@ $script:InstalledScriptVersion = $ScriptVersion
 Write-Config
 
 if (-not (Is-Initialized)) {
-    Write-Info "No initialized application installation was detected. Starting the one-click installation flow."
-    Initialize-Installation
+    Write-Info "No initialized application installation was detected."
+    Write-Running "initial one-click installation"
+    try {
+        Initialize-Installation
+        Write-Done "Initial one-click installation"
+    } catch {
+        Write-Warn ("Initial one-click installation failed: " + $_.Exception.Message)
+        throw
+    }
 } elseif ($FromInstaller) {
-    Write-Info "Installer detected an existing installation. Running an update check first."
-    Check-Updates
+    Write-Info "Installer detected an existing installation."
+    Write-Running "update check"
+    try {
+        Check-Updates
+        Write-Done "Update check"
+    } catch {
+        Write-Warn ("Update check failed: " + $_.Exception.Message)
+    }
 }
 
 while ($true) {
     Show-Menu
     $choice = Read-Host "Select an action"
     switch ($choice) {
-        "1" { Check-Updates }
-        "2" { Show-Instances }
-        "3" { Configure-Instance }
-        "4" { Install-SingleInstance }
-        "5" { Start-SingleInstance }
-        "6" { Stop-SingleInstance }
-        "7" { Start-AllInstances }
-        "8" { Stop-AllInstances }
-        "9" { Uninstall-SingleInstance }
-        "10" { Remove-LauncherOnly }
-        "11" { Uninstall-All }
-        "0" { break }
-        default { Write-Info "Invalid selection." }
+        "1" { Invoke-MenuAction -Label "checking for updates" -Action { Check-Updates } }
+        "2" { Invoke-MenuAction -Label "showing installed instances" -Action { Show-Instances } }
+        "3" { Invoke-MenuAction -Label "updating instance settings" -Action { Configure-Instance } }
+        "4" { Invoke-MenuAction -Label "installing a single service instance" -Action { Install-SingleInstance } }
+        "5" { Invoke-MenuAction -Label "starting a single service instance" -Action { Start-SingleInstance } }
+        "6" { Invoke-MenuAction -Label "stopping a single service instance" -Action { Stop-SingleInstance } }
+        "7" { Invoke-MenuAction -Label "starting all service instances" -Action { Start-AllInstances } }
+        "8" { Invoke-MenuAction -Label "stopping all service instances" -Action { Stop-AllInstances } }
+        "9" { Invoke-MenuAction -Label "uninstalling a single service instance" -Action { Uninstall-SingleInstance } }
+        "10" { Invoke-MenuAction -Label "removing the manager command" -Action { Remove-LauncherOnly } }
+        "11" { Invoke-MenuAction -Label "uninstalling everything" -Action { Uninstall-All } }
+        "0" { Write-Done "Exit"; exit 0 }
+        default { Write-Warn "Invalid selection." }
     }
 }

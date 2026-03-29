@@ -16,21 +16,34 @@ try {
 } catch {
 }
 
+function Write-ColorLine {
+    param(
+        [string]$Message,
+        [ConsoleColor]$Color = [ConsoleColor]::Gray
+    )
+
+    try {
+        Write-Host $Message -ForegroundColor $Color
+    } catch {
+        Write-Host $Message
+    }
+}
+
 function Write-Info {
     param([string]$Message)
-    Write-Host $Message
+    Write-ColorLine -Message $Message -Color Cyan
 }
 
 function Write-Step {
     param([string]$Message)
-    Write-Host ("[Step] " + $Message)
+    Write-ColorLine -Message ("[Step] " + $Message) -Color Yellow
 }
 
 function Show-Banner {
-    Write-Host "===================================="
-    Write-Host "       VulcanLocalDB Setup"
-    Write-Host "===================================="
-    Write-Host "The installer now installs only the manager."
+    Write-ColorLine -Message "====================================" -Color DarkCyan
+    Write-ColorLine -Message "       VulcanLocalDB Setup" -Color Magenta
+    Write-ColorLine -Message "====================================" -Color DarkCyan
+    Write-Info "The installer now installs only the manager."
 }
 
 function Read-Default {
