@@ -3,24 +3,58 @@ name: Build Native Release Binaries
 on:
   workflow_dispatch:
     inputs:
-      duckdb_linux_runner:
-        description: "指派 vldb-duckdb 的 Linux x64/ARM 原生编译节点"
+      # ================= LANCEDb 算力分配盘 (默认: 9950X 阵列) =================
+      lancedb_linux_x64:
+        description: "[LanceDB] Linux x64 节点"
         required: true
-        default: "ubuntu-24.04"
+        default: "9950x"
         type: choice
-        options:
-          - "9950x"
-          - "proart"
-          - "ubuntu-24.04"
-      lancedb_linux_runner:
-        description: "指派 vldb-lancedb 的 Linux x64/ARM 原生编译节点"
+        options: [ "9950x", "proart", "ubuntu-24.04" ]
+      lancedb_linux_arm:
+        description: "[LanceDB] Linux ARM 节点"
         required: true
-        default: "ubuntu-24.04"
+        default: "9950x"
         type: choice
-        options:
-          - "9950x"
-          - "proart"
-          - "ubuntu-24.04"
+        options: [ "9950x", "proart", "ubuntu-24.04" ]
+      lancedb_mac_arm:
+        description: "[LanceDB] macOS ARM 节点"
+        required: true
+        default: "macos-15"
+        type: choice
+        options: [ "macos-15", "9950x", "proart" ]
+      lancedb_win_x64:
+        description: "[LanceDB] Windows x64 节点"
+        required: true
+        default: "9950x-win"
+        type: choice
+        options: [ "9950x-win", "proart-win", "windows-latest" ]
+        
+      # ================= DuckDB 算力分配盘 (默认: ProArt 阵列) =================
+      duckdb_linux_x64:
+        description: "[DuckDB] Linux x64 节点"
+        required: true
+        default: "proart"
+        type: choice
+        options: [ "proart", "9950x", "ubuntu-24.04" ]
+      duckdb_linux_arm:
+        description: "[DuckDB] Linux ARM 节点"
+        required: true
+        default: "proart"
+        type: choice
+        options: [ "proart", "9950x", "ubuntu-24.04" ]
+      duckdb_mac_arm:
+        description: "[DuckDB] macOS ARM 节点"
+        required: true
+        default: "macos-15"
+        type: choice
+        options: [ "macos-15", "proart", "9950x" ]
+      duckdb_win_x64:
+        description: "[DuckDB] Windows x64 节点"
+        required: true
+        default: "proart-win"
+        type: choice
+        options: [ "proart-win", "9950x-win", "windows-latest" ]
+
   push:
     tags:
       - "v*"
@@ -39,55 +73,51 @@ env:
 jobs:
   build:
     name: ${{ matrix.service }} • ${{ matrix.target }}
-    runs-on: ${{ fromJSON( matrix.runner_mode == 'dynamic' && matrix.runner != 'ubuntu-24.04' && format('["self-hosted", "{0}"]', matrix.runner) || format('["{0}"]', matrix.runner) ) }}
+    # 【智能算力路由】：自动识别云端还是本地，动态生成 runner 数组
+    runs-on: >-
+      ${{ 
+        (startsWith(matrix.runner, 'ubuntu') || startsWith(matrix.runner, 'macos') || startsWith(matrix.runner, 'windows')) 
+        && fromJSON(format('["{0}"]', matrix.runner)) 
+        || fromJSON(format('["self-hosted", "{0}"]', matrix.runner)) 
+      }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # --- LanceDB ---
+          # --- LanceDB 矩阵 (绑定 9950x 默认值) ---
           - service: vldb-lancedb
             binary: vldb-lancedb
-            # 【修复 1】：Tag 触发时，无 input 则强行派发给 9950x，防止云端 OOM 崩溃
-            runner: ${{ inputs.lancedb_linux_runner || '9950x' }}
-            runner_mode: dynamic
+            runner: ${{ inputs.lancedb_linux_x64 || '9950x' }}
             target: x86_64-unknown-linux-gnu
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: ${{ inputs.lancedb_linux_runner || '9950x' }} 
-            runner_mode: dynamic 
+            runner: ${{ inputs.lancedb_linux_arm || '9950x' }} 
             target: aarch64-unknown-linux-gnu
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: macos-15
-            runner_mode: fixed
+            runner: ${{ inputs.lancedb_mac_arm || 'macos-15' }}
             target: aarch64-apple-darwin
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: windows-latest
-            runner_mode: fixed
+            runner: ${{ inputs.lancedb_win_x64 || '9950x-win' }}
             target: x86_64-pc-windows-msvc
             
-          # --- DuckDB ---
+          # --- DuckDB 矩阵 (绑定 proart 默认值) ---
           - service: vldb-duckdb
             binary: vldb-duckdb
-            # 【修复 1】：Tag 触发时，无 input 则强行派发给 proart
-            runner: ${{ inputs.duckdb_linux_runner || 'proart' }}
-            runner_mode: dynamic
+            runner: ${{ inputs.duckdb_linux_x64 || 'proart' }}
             target: x86_64-unknown-linux-gnu
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: ${{ inputs.duckdb_linux_runner || 'proart' }} 
-            runner_mode: dynamic 
+            runner: ${{ inputs.duckdb_linux_arm || 'proart' }} 
             target: aarch64-unknown-linux-gnu
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: macos-15
-            runner_mode: fixed
+            runner: ${{ inputs.duckdb_mac_arm || 'macos-15' }}
             target: aarch64-apple-darwin
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: windows-latest
-            runner_mode: fixed
+            runner: ${{ inputs.duckdb_win_x64 || 'proart-win' }}
             target: x86_64-pc-windows-msvc
 
     steps:
@@ -157,8 +187,8 @@ jobs:
           rustup target add "$TARGET"
 
       - name: Cache Rust build outputs on Windows
-        # 【修复 2】：追加 && matrix.runner_mode == 'fixed'，仅限云端使用缓存，防止本地 tar 冲突
-        if: runner.os == 'Windows' && matrix.runner_mode == 'fixed'
+        # 【智能判断】：如果分配的节点名字以 'windows' 开头 (即云端)，才执行缓存
+        if: runner.os == 'Windows' && startsWith(matrix.runner, 'windows')
         uses: actions/cache@v4
         with:
           path: |
@@ -171,8 +201,8 @@ jobs:
             native-release-${{ runner.os }}-${{ matrix.service }}-
 
       - name: Cache Rust build outputs on Unix
-        # 【修复 2】：追加 && matrix.runner_mode == 'fixed'，彻底放过本地 Linux 战神
-        if: runner.os != 'Windows' && matrix.runner_mode == 'fixed'
+        # 【智能判断】：如果分配的节点名字以 'ubuntu' 或 'macos' 开头 (即云端)，才执行缓存
+        if: runner.os != 'Windows' && (startsWith(matrix.runner, 'ubuntu') || startsWith(matrix.runner, 'macos'))
         uses: actions/cache@v4
         with:
           path: |
@@ -275,7 +305,8 @@ jobs:
           service_dir="$GITHUB_WORKSPACE/$SERVICE"
           cargo_toml="$service_dir/Cargo.toml"
           
-          version="$(sed -nE 's/^version\s*=\s*"([^"]+)"/\1/p' "$cargo_toml" | head -n1)"
+          # 【修复 1】：使用 POSIX 标准的 [[:space:]] 替换 \s，消灭 macOS 提取版本号失败导致的 vunknown 问题
+          version="$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)"/\1/p' "$cargo_toml" | head -n1)"
           if [[ -z "$version" ]]; then
             version="unknown"
           fi

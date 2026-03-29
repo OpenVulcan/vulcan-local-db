@@ -32,31 +32,62 @@
 - 希望通过 gRPC 而不是直接绑定数据库的内部工具
 - 同时需要轻量 JSON 结果和高吞吐 Arrow 数据流的系统
 
-## 快速开始
+## 快速安装
 
-### 使用 Docker 启动
+### 直接使用 Docker Hub
+
+如果你想最快速地安装并运行，直接拉取并启动已发布镜像：
 
 ```bash
-docker compose -f ./docker-compose.example.yml up -d --build
+docker pull openvulcan/vldb-lancedb:latest
+docker pull openvulcan/vldb-duckdb:latest
 ```
 
-如果你不想本地构建，而是直接从 Docker Hub 安装已发布镜像，可以查看：
+```bash
+docker run -d \
+  --name vldb-lancedb \
+  --restart unless-stopped \
+  -p 50051:50051 \
+  -v vldb-lancedb-data:/app/data \
+  openvulcan/vldb-lancedb:latest
 
-- 中文：[docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)
-- English: [docs/docker-install.en.md](./docs/docker-install.en.md)
+docker run -d \
+  --name vldb-duckdb \
+  --restart unless-stopped \
+  -p 50052:50052 \
+  -v vldb-duckdb-data:/app/data \
+  openvulcan/vldb-duckdb:latest
+```
 
-默认端口：
+默认访问地址：
 
 - `vldb-lancedb`：`127.0.0.1:50051`
 - `vldb-duckdb`：`127.0.0.1:50052`
 
-停止：
+详细 Docker 安装说明：
+
+- 中文：[docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)
+- English: [docs/docker-install.en.md](./docs/docker-install.en.md)
+
+### 使用编译后的发布包
+
+如果你不想使用 Docker，也可以直接下载 GitHub Releases 里的平台对应压缩包，解压后复制示例配置文件，再直接启动二进制。
+
+典型启动命令：
 
 ```bash
-docker compose -f ./docker-compose.example.yml down
+./vldb-lancedb --config ./vldb-lancedb.json
+./vldb-duckdb --config ./vldb-duckdb.json
 ```
 
-### 本地构建
+详细二进制安装说明：
+
+- 中文：[docs/native-install.zh-CN.md](./docs/native-install.zh-CN.md)
+- English: [docs/native-install.en.md](./docs/native-install.en.md)
+
+## 开发者使用
+
+### 本地源码构建
 
 ```bash
 cd ./vldb-lancedb
@@ -65,6 +96,13 @@ cargo build
 cd ../vldb-duckdb
 cargo build
 ```
+
+### 本地构建 Docker 镜像
+
+如果你是开发者，需要自行构建镜像、调试 Docker 配置或使用 compose 开发环境，请查看 Docker 构建说明：
+
+- 中文：[docs/docker.zh-CN.md](./docs/docker.zh-CN.md)
+- English: [docs/docker.en.md](./docs/docker.en.md)
 
 ## 仓库结构
 
@@ -82,12 +120,15 @@ cargo build
 
 - 英文首页：[README.md](./README.md)
 - 文档索引：[docs/README.zh-CN.md](./docs/README.zh-CN.md)
-- Docker 说明：
-  - 中文：[docs/docker.zh-CN.md](./docs/docker.zh-CN.md)
-  - English: [docs/docker.en.md](./docs/docker.en.md)
-- Docker 安装说明：
+- 二进制安装说明：
+  - 中文：[docs/native-install.zh-CN.md](./docs/native-install.zh-CN.md)
+  - English: [docs/native-install.en.md](./docs/native-install.en.md)
+- Docker 快速安装说明：
   - 中文：[docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)
   - English: [docs/docker-install.en.md](./docs/docker-install.en.md)
+- Docker 构建说明：
+  - 中文：[docs/docker.zh-CN.md](./docs/docker.zh-CN.md)
+  - English: [docs/docker.en.md](./docs/docker.en.md)
 - 服务说明：
   - `vldb-lancedb`
     - 中文：[docs/vldb-lancedb.zh-CN.md](./docs/vldb-lancedb.zh-CN.md)

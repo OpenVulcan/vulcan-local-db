@@ -1,8 +1,10 @@
-# Docker Guide
+# Docker Build Guide
 
 ## Overview
 
-This repository now includes Docker packaging files for both services:
+This guide is for developers who want to build images locally, customize Dockerfiles, or run the repository with local Docker build inputs.
+
+This repository includes Docker packaging files for both services:
 
 - `vldb-lancedb/Dockerfile`
 - `vldb-duckdb/Dockerfile`

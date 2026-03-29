@@ -9,10 +9,12 @@
 
 ## 部署说明
 
-- Docker 说明：[`docker.zh-CN.md`](./docker.zh-CN.md)
-- Docker guide (English): [`docker.en.md`](./docker.en.md)
-- Docker 安装说明：[`docker-install.zh-CN.md`](./docker-install.zh-CN.md)
-- Docker install guide (English): [`docker-install.en.md`](./docker-install.en.md)
+- 二进制安装说明：[`native-install.zh-CN.md`](./native-install.zh-CN.md)
+- Native binary install guide (English): [`native-install.en.md`](./native-install.en.md)
+- Docker 快速安装说明：[`docker-install.zh-CN.md`](./docker-install.zh-CN.md)
+- Docker quick install guide (English): [`docker-install.en.md`](./docker-install.en.md)
+- Docker 构建说明：[`docker.zh-CN.md`](./docker.zh-CN.md)
+- Docker build guide (English): [`docker.en.md`](./docker.en.md)
 
 ## 服务文档
 

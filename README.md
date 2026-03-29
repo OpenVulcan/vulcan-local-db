@@ -32,31 +32,62 @@ This repository is designed for scenarios where you want a small local gateway i
 - internal tools that prefer gRPC over direct database coupling
 - services that want one path for lightweight JSON results and another for high-volume Arrow data
 
-## Quick Start
+## Quick Install
 
-### Start With Docker
+### Docker Hub
+
+Pull and run the published images directly:
 
 ```bash
-docker compose -f ./docker-compose.example.yml up -d --build
+docker pull openvulcan/vldb-lancedb:latest
+docker pull openvulcan/vldb-duckdb:latest
 ```
 
-If you want to install the published images directly from Docker Hub instead of building locally, see:
+```bash
+docker run -d \
+  --name vldb-lancedb \
+  --restart unless-stopped \
+  -p 50051:50051 \
+  -v vldb-lancedb-data:/app/data \
+  openvulcan/vldb-lancedb:latest
 
-- English: [docs/docker-install.en.md](./docs/docker-install.en.md)
-- Chinese: [docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)
+docker run -d \
+  --name vldb-duckdb \
+  --restart unless-stopped \
+  -p 50052:50052 \
+  -v vldb-duckdb-data:/app/data \
+  openvulcan/vldb-duckdb:latest
+```
 
-Default ports:
+Default endpoints:
 
 - `vldb-lancedb`: `127.0.0.1:50051`
 - `vldb-duckdb`: `127.0.0.1:50052`
 
-Stop the stack:
+Detailed Docker install guides:
+
+- English: [docs/docker-install.en.md](./docs/docker-install.en.md)
+- Chinese: [docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)
+
+### Prebuilt Native Binaries
+
+If you prefer not to use Docker, download the matching release archive from GitHub Releases, extract it, copy the example config files, and run the binaries directly.
+
+Typical startup commands:
 
 ```bash
-docker compose -f ./docker-compose.example.yml down
+./vldb-lancedb --config ./vldb-lancedb.json
+./vldb-duckdb --config ./vldb-duckdb.json
 ```
 
-### Build Locally
+Detailed binary install guides:
+
+- English: [docs/native-install.en.md](./docs/native-install.en.md)
+- Chinese: [docs/native-install.zh-CN.md](./docs/native-install.zh-CN.md)
+
+## Developer Setup
+
+### Build From Source
 
 ```bash
 cd ./vldb-lancedb
@@ -65,6 +96,13 @@ cargo build
 cd ../vldb-duckdb
 cargo build
 ```
+
+### Build Docker Images Locally
+
+For local image builds, Dockerfiles, compose-based development, and custom Docker configs, see the developer Docker guide:
+
+- English: [docs/docker.en.md](./docs/docker.en.md)
+- Chinese: [docs/docker.zh-CN.md](./docs/docker.zh-CN.md)
 
 ## Repository Layout
 
@@ -82,12 +120,15 @@ cargo build
 
 - Chinese overview: [README.zh-CN.md](./README.zh-CN.md)
 - Documentation index: [docs/README.en.md](./docs/README.en.md)
-- Docker guide:
-  - English: [docs/docker.en.md](./docs/docker.en.md)
-  - Chinese: [docs/docker.zh-CN.md](./docs/docker.zh-CN.md)
-- Docker install guide:
+- Native binary install guide:
+  - English: [docs/native-install.en.md](./docs/native-install.en.md)
+  - Chinese: [docs/native-install.zh-CN.md](./docs/native-install.zh-CN.md)
+- Docker quick install guide:
   - English: [docs/docker-install.en.md](./docs/docker-install.en.md)
   - Chinese: [docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)
+- Docker build guide for developers:
+  - English: [docs/docker.en.md](./docs/docker.en.md)
+  - Chinese: [docs/docker.zh-CN.md](./docs/docker.zh-CN.md)
 - Service guides:
   - `vldb-lancedb`
     - English: [docs/vldb-lancedb.en.md](./docs/vldb-lancedb.en.md)
