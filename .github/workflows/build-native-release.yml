@@ -81,7 +81,7 @@ jobs:
         || fromJSON(format('["self-hosted", "{0}"]', matrix.runner)) 
       }}
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           # --- LanceDB 矩阵 (绑定 9950x 默认值) ---
