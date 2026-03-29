@@ -214,6 +214,14 @@ jobs:
             native-release-${{ runner.os }}-${{ matrix.service }}-${{ matrix.target }}-
             native-release-${{ runner.os }}-${{ matrix.service }}-
 
+      # 👇👇👇 【修复】：专为 Windows 节点强行注入 MSVC 和 SDK 环境变量，消灭 kernel32.lib 找不到的问题
+      - name: Set up MSVC environment for Windows
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      # 👆👆👆
+
       - name: Build release binary
         working-directory: ${{ matrix.service }}
         env:
