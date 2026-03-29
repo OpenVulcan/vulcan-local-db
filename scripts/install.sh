@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.10"
+SCRIPT_VERSION="0.1.11"
 REPO_SLUG="OpenVulcan/vulcan-local-db"
 REPO_URL="https://github.com/OpenVulcan/vulcan-local-db"
 RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts"
@@ -39,8 +39,7 @@ initialize_prompt_input() {
     return 0
   fi
 
-  if [[ -r /dev/tty ]]; then
-    exec 3</dev/tty
+  if exec 3<>/dev/tty 2>/dev/null; then
     PROMPT_INPUT_FD="3"
   else
     PROMPT_INPUT_FD="0"
@@ -53,7 +52,7 @@ read_prompt_value() {
 
   initialize_prompt_input
   if [[ "${PROMPT_INPUT_FD}" == "3" ]]; then
-    printf '%s' "${prompt}" >/dev/tty
+    printf '%s' "${prompt}" >&3
     IFS= read -r -u 3 "${__resultvar}" || return 1
   else
     IFS= read -r -p "${prompt}" "${__resultvar}" || return 1
