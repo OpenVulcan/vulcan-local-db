@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       duckdb_linux_runner:
-        description: "指派 vldb-duckdb 的 Linux x64 原生编译节点"
+        description: "指派 vldb-duckdb 的 Linux x64/ARM 原生编译节点"
         required: true
         default: "ubuntu-24.04"
         type: choice
@@ -13,7 +13,7 @@ on:
           - "proart"
           - "ubuntu-24.04"
       lancedb_linux_runner:
-        description: "指派 vldb-lancedb 的 Linux x64 原生编译节点"
+        description: "指派 vldb-lancedb 的 Linux x64/ARM 原生编译节点"
         required: true
         default: "ubuntu-24.04"
         type: choice
@@ -48,8 +48,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: ubuntu-24.04-arm
-            runner_mode: fixed
+            runner: ${{ inputs.lancedb_linux_runner || 'ubuntu-24.04' }} # 【修改】拉回本地动态调度
+            runner_mode: dynamic # 【修改】开启排队
             target: aarch64-unknown-linux-gnu
           - service: vldb-lancedb
             binary: vldb-lancedb
@@ -75,8 +75,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: ubuntu-24.04-arm
-            runner_mode: fixed
+            runner: ${{ inputs.duckdb_linux_runner || 'ubuntu-24.04' }} # 【修改】拉回本地动态调度
+            runner_mode: dynamic # 【修改】开启排队
             target: aarch64-unknown-linux-gnu
           - service: vldb-duckdb
             binary: vldb-duckdb
@@ -102,7 +102,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           missing=0
-          for pkg in pkg-config cmake clang protoc; do
+          # 【修改】追加了 ARM 交叉编译的 C/C++ 工具链
+          for pkg in pkg-config cmake clang protoc aarch64-linux-gnu-gcc aarch64-linux-gnu-g++; do
             if ! command -v "$pkg" >/dev/null 2>&1; then
               missing=1
             fi
@@ -110,7 +111,8 @@ jobs:
 
           if [ "$missing" -eq 1 ] || ! dpkg -s libssl-dev >/dev/null 2>&1; then
             sudo apt-get update
-            sudo apt-get install -y pkg-config cmake clang libssl-dev protobuf-compiler zip
+            # 【修改】安装原生编译底座
+            sudo apt-get install -y pkg-config cmake clang libssl-dev protobuf-compiler zip gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           fi
 
       - name: Install macOS build dependencies
@@ -194,6 +196,15 @@ jobs:
         working-directory: ${{ matrix.service }}
         env:
           CARGO_TERM_COLOR: always
+          # 【修改】：注入 macOS 交叉编译环境变量 (解决 ld symbol not found)
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+          CMAKE_OSX_ARCHITECTURES: ${{ matrix.target == 'x86_64-apple-darwin' && 'x86_64' || (matrix.target == 'aarch64-apple-darwin' && 'arm64' || '') }}
+          CFLAGS_x86_64_apple_darwin: "-target x86_64-apple-macos12"
+          CXXFLAGS_x86_64_apple_darwin: "-target x86_64-apple-macos12"
+          # 【修改】：注入 Linux ARM 交叉编译环境变量 (让本地机器可以打出 ARM 包)
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: "aarch64-linux-gnu-gcc"
+          CC_aarch64_unknown_linux_gnu: "aarch64-linux-gnu-gcc"
+          CXX_aarch64_unknown_linux_gnu: "aarch64-linux-gnu-g++"
         run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Package release archive on Windows runner
