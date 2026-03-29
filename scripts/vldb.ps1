@@ -4,10 +4,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.4"
-$GlobalHome = Join-Path $HOME ".vulcan\vldg"
+$ScriptVersion = "0.1.6"
+$GlobalHome = Join-Path $HOME ".vulcan\vldb"
 $GlobalConfig = Join-Path $GlobalHome "config.json"
 $RunDir = Join-Path $GlobalHome "run"
+$LanceDbRoot = Join-Path $GlobalHome "lancedb"
+$DuckDbRoot = Join-Path $GlobalHome "duckdb"
 $InstallDir = $null
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
@@ -76,7 +78,7 @@ function Start-DeferredCleanup {
     $quotedTargets = $targets | ForEach-Object { '"' + $_.Replace('"', '""') + '"' }
     $cleanupCommand = "ping 127.0.0.1 -n 4 >nul"
     foreach ($targetPath in $quotedTargets) {
-        $cleanupCommand += " & rmdir /s /q $targetPath"
+        $cleanupCommand += " & rmdir /s /q $targetPath 2>nul & del /f /q $targetPath 2>nul"
     }
 
     Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cleanupCommand -WindowStyle Hidden | Out-Null
@@ -110,6 +112,8 @@ function Write-Config {
         install_dir = $script:InstallDir
         release_tag = $script:ReleaseTag
         script_version = $ScriptVersion
+        lancedb_root = $script:LanceDbRoot
+        duckdb_root = $script:DuckDbRoot
     } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $script:GlobalConfig
     $script:InstalledScriptVersion = $ScriptVersion
 }
@@ -128,6 +132,63 @@ function Resolve-InstallDir {
     if ($config -and $config.script_version) {
         $script:InstalledScriptVersion = $config.script_version
     }
+    if ($config -and $config.lancedb_root) {
+        $script:LanceDbRoot = $config.lancedb_root
+    }
+    if ($config -and $config.duckdb_root) {
+        $script:DuckDbRoot = $config.duckdb_root
+    }
+}
+
+function Get-DefaultDataRoot {
+    param([string]$Service)
+
+    if ($Service -eq "vldb-lancedb") {
+        return (Join-Path $script:GlobalHome "lancedb")
+    }
+    return (Join-Path $script:GlobalHome "duckdb")
+}
+
+function Get-DefaultInstanceDataPath {
+    param(
+        [string]$Service,
+        [string]$Instance,
+        [string]$LanceRoot = $script:LanceDbRoot,
+        [string]$DuckRoot = $script:DuckDbRoot
+    )
+
+    if ($Service -eq "vldb-lancedb") {
+        return (Join-Path $LanceRoot $Instance)
+    }
+    return (Join-Path (Join-Path $DuckRoot $Instance) "duckdb.db")
+}
+
+function Resolve-NormalizedPath {
+    param([string]$PathValue)
+
+    $fullPath = [System.IO.Path]::GetFullPath($PathValue)
+    if ($fullPath.Length -gt 3) {
+        $fullPath = $fullPath.TrimEnd('\', '/')
+    }
+    return $fullPath
+}
+
+function Test-PathsOverlap {
+    param([string]$LeftPath, [string]$RightPath)
+
+    $leftNormalized = Resolve-NormalizedPath $LeftPath
+    $rightNormalized = Resolve-NormalizedPath $RightPath
+
+    if ([string]::Equals($leftNormalized, $rightNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    $leftPrefix = $leftNormalized + $separator
+    $rightPrefix = $rightNormalized + $separator
+
+    return $rightNormalized.StartsWith($leftPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $leftNormalized.StartsWith($rightPrefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Normalize-Version {
@@ -195,23 +256,23 @@ function Get-RemoteScriptVersion {
 function Check-Updates {
     Write-Info "Checking for updates..."
 
-    $remoteScriptVersion = Get-RemoteScriptVersion -ScriptName "vldg.ps1"
+    $remoteScriptVersion = Get-RemoteScriptVersion -ScriptName "vldb.ps1"
     $latestTag = $null
     try {
         $latestTag = (Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/releases/latest").tag_name
     } catch {
     }
 
-    Write-Info "Current controller script version: $ScriptVersion"
+    Write-Info "Current manager script version: $ScriptVersion"
     if ($remoteScriptVersion) {
-        Write-Info "Latest controller script version: $remoteScriptVersion"
+        Write-Info "Latest manager script version: $remoteScriptVersion"
         if ((Compare-VersionStrings $remoteScriptVersion $ScriptVersion) -gt 0) {
-            Write-Info "Controller script update available."
+            Write-Info "Manager script update available."
         } else {
-            Write-Info "Controller script is up to date."
+            Write-Info "Manager script is up to date."
         }
     } else {
-        Write-Info "Latest controller script version: unavailable"
+        Write-Info "Latest manager script version: unavailable"
     }
 
     if ($script:ReleaseTag) {
@@ -312,6 +373,72 @@ function Get-InstanceFiles {
     } | Sort-Object Name
 }
 
+function Get-ConfigDbPath {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) { return $null }
+    try {
+        return (Get-Content $Path -Raw | ConvertFrom-Json).db_path
+    } catch {
+        return $null
+    }
+}
+
+function Get-ConflictMessageForDataPath {
+    param(
+        [string]$CandidatePath,
+        [string]$Service,
+        [string]$Instance
+    )
+
+    foreach ($file in Get-InstanceFiles) {
+        $meta = Get-InstanceMeta $file
+        if ($meta.service -eq $Service -and $meta.instance -eq $Instance) {
+            continue
+        }
+
+        $existingPath = Get-ConfigDbPath $file.FullName
+        if ([string]::IsNullOrWhiteSpace($existingPath)) {
+            continue
+        }
+
+        if (Test-PathsOverlap $CandidatePath $existingPath) {
+            return "Data path conflicts with $($meta.service)/$($meta.instance): $existingPath"
+        }
+    }
+
+    return $null
+}
+
+function Get-DataPathValidationError {
+    param(
+        [string]$CandidatePath,
+        [string]$Service,
+        [string]$Instance
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CandidatePath) -or -not [System.IO.Path]::IsPathRooted($CandidatePath)) {
+        return "Please use a legal absolute data path."
+    }
+
+    try {
+        [System.IO.Path]::GetFullPath($CandidatePath) | Out-Null
+    } catch {
+        return "Please use a legal absolute data path."
+    }
+
+    if (Test-PathsOverlap $script:InstallDir $CandidatePath) {
+        return "Database paths must stay outside the installation directory."
+    }
+
+    $conflict = Get-ConflictMessageForDataPath -CandidatePath $CandidatePath -Service $Service -Instance $Instance
+    if ($conflict) {
+        return $conflict
+    }
+
+    return $null
+}
+
 function Choose-Service {
     while ($true) {
         Write-Host "1. LanceDB"
@@ -367,35 +494,26 @@ function Get-InstanceConfigPath {
     return (Join-Path $script:InstallDir "config\$Service-$Instance.json")
 }
 
-function Get-DataPath {
-    param([string]$Service, [string]$Instance)
-    if ($Service -eq "vldb-lancedb") {
-        return (Join-Path $script:InstallDir "data\lancedb\$Instance")
-    }
-    return (Join-Path $script:InstallDir "data\duckdb\$Instance\duckdb.db")
-}
-
 function Write-ServiceConfig {
-    param([string]$Service, [string]$Instance, [string]$BindHost, [int]$Port)
+    param([string]$Service, [string]$Instance, [string]$BindHost, [int]$Port, [string]$DataPath)
 
     $configDir = Join-Path $script:InstallDir "config"
     New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 
     if ($Service -eq "vldb-lancedb") {
-        $dataPath = Get-DataPath $Service $Instance
-        New-Item -ItemType Directory -Force -Path $dataPath | Out-Null
+        New-Item -ItemType Directory -Force -Path $DataPath | Out-Null
         @{
             host = $BindHost
             port = $Port
-            db_path = $dataPath
+            db_path = $DataPath
         } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Get-InstanceConfigPath $Service $Instance)
     } else {
-        $dataDir = Split-Path -Parent (Get-DataPath $Service $Instance)
+        $dataDir = Split-Path -Parent $DataPath
         New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
         @{
             host = $BindHost
             port = $Port
-            db_path = (Get-DataPath $Service $Instance)
+            db_path = $DataPath
             memory_limit = "2GB"
             threads = 4
         } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Get-InstanceConfigPath $Service $Instance)
@@ -559,7 +677,7 @@ function Show-Instances {
         $meta = Get-InstanceMeta $file
         $cfg = Get-Content $file.FullName -Raw | ConvertFrom-Json
         $registered = if (Test-Registered $meta.service $meta.instance) { "registered" } else { "not registered" }
-        Write-Host ("{0} {1} | {2}:{3} | {4}" -f $meta.service, $meta.instance, $cfg.host, $cfg.port, $registered)
+        Write-Host ("{0} {1} | {2}:{3} | {4} | {5}" -f $meta.service, $meta.instance, $cfg.host, $cfg.port, $registered, $cfg.db_path)
     }
 }
 
@@ -569,20 +687,31 @@ function Configure-Instance {
     $meta = Get-InstanceMeta $file
     $cfg = Get-Content $file.FullName -Raw | ConvertFrom-Json
 
-    $bindHost = Read-Host ("Bind IP [{0}]" -f $cfg.host)
-    if ([string]::IsNullOrWhiteSpace($bindHost)) { $bindHost = $cfg.host }
-
     while ($true) {
+        $bindHost = Read-Host ("Bind IP [{0}]" -f $cfg.host)
+        if ([string]::IsNullOrWhiteSpace($bindHost)) { $bindHost = $cfg.host }
+
         $portInput = Read-Host ("Port [{0}]" -f $cfg.port)
         if ([string]::IsNullOrWhiteSpace($portInput)) { $portInput = "$($cfg.port)" }
-        if ($portInput -match '^\d+$' -and [int]$portInput -ge 1 -and [int]$portInput -le 65535) {
-            $port = [int]$portInput
-            break
+        if (-not ($portInput -match '^\d+$' -and [int]$portInput -ge 1 -and [int]$portInput -le 65535)) {
+            Write-Info "Invalid port."
+            continue
         }
-        Write-Info "Invalid port."
+
+        $dataPathInput = Read-Host ("Data path [{0}]" -f $cfg.db_path)
+        if ([string]::IsNullOrWhiteSpace($dataPathInput)) { $dataPathInput = $cfg.db_path }
+        $validationError = Get-DataPathValidationError -CandidatePath $dataPathInput -Service $meta.service -Instance $meta.instance
+        if ($validationError) {
+            Write-Info $validationError
+            continue
+        }
+
+        $port = [int]$portInput
+        $dataPath = Resolve-NormalizedPath $dataPathInput
+        break
     }
 
-    Write-ServiceConfig -Service $meta.service -Instance $meta.instance -BindHost $bindHost -Port $port
+    Write-ServiceConfig -Service $meta.service -Instance $meta.instance -BindHost $bindHost -Port $port -DataPath $dataPath
     Write-Config
     if (Test-Registered $meta.service $meta.instance) {
         Register-Instance -Service $meta.service -Instance $meta.instance
@@ -605,21 +734,33 @@ function Install-SingleInstance {
         }
     }
 
-    $bindHost = Read-Host "Bind IP [127.0.0.1]"
-    if ([string]::IsNullOrWhiteSpace($bindHost)) { $bindHost = "127.0.0.1" }
-
     while ($true) {
+        $bindHost = Read-Host "Bind IP [127.0.0.1]"
+        if ([string]::IsNullOrWhiteSpace($bindHost)) { $bindHost = "127.0.0.1" }
+
         $defaultPort = if ($service -eq "vldb-lancedb") { 50051 } else { 50052 }
         $portInput = Read-Host ("Port [{0}]" -f $defaultPort)
         if ([string]::IsNullOrWhiteSpace($portInput)) { $portInput = "$defaultPort" }
-        if ($portInput -match '^\d+$' -and [int]$portInput -ge 1 -and [int]$portInput -le 65535) {
-            $port = [int]$portInput
-            break
+        if (-not ($portInput -match '^\d+$' -and [int]$portInput -ge 1 -and [int]$portInput -le 65535)) {
+            Write-Info "Invalid port."
+            continue
         }
-        Write-Info "Invalid port."
+
+        $defaultDataPath = Get-DefaultInstanceDataPath -Service $service -Instance $instance
+        $dataPathInput = Read-Host ("Data path [{0}]" -f $defaultDataPath)
+        if ([string]::IsNullOrWhiteSpace($dataPathInput)) { $dataPathInput = $defaultDataPath }
+        $validationError = Get-DataPathValidationError -CandidatePath $dataPathInput -Service $service -Instance $instance
+        if ($validationError) {
+            Write-Info $validationError
+            continue
+        }
+
+        $port = [int]$portInput
+        $dataPath = Resolve-NormalizedPath $dataPathInput
+        break
     }
 
-    Write-ServiceConfig -Service $service -Instance $instance -BindHost $bindHost -Port $port
+    Write-ServiceConfig -Service $service -Instance $instance -BindHost $bindHost -Port $port -DataPath $dataPath
     Write-Config
     if (Confirm-Choice "Register this instance as a service now?" "N") {
         Register-Instance -Service $service -Instance $instance
@@ -630,17 +771,14 @@ function Uninstall-SingleInstance {
     $file = Choose-InstanceFile
     if (-not $file) { return }
     $meta = Get-InstanceMeta $file
+    $cfg = Get-Content $file.FullName -Raw | ConvertFrom-Json
 
     if (Test-Registered $meta.service $meta.instance) {
         Unregister-Instance -Service $meta.service -Instance $meta.instance
     }
 
     Remove-Item $file.FullName -Force
-    if ($meta.service -eq "vldb-lancedb") {
-        Remove-Item (Get-DataPath $meta.service $meta.instance) -Recurse -Force -ErrorAction SilentlyContinue
-    } else {
-        Remove-Item (Split-Path -Parent (Get-DataPath $meta.service $meta.instance)) -Recurse -Force -ErrorAction SilentlyContinue
-    }
+    Write-Info ("Database files were preserved at: {0}" -f $cfg.db_path)
 }
 
 function Toggle-ServiceRegistration {
@@ -657,8 +795,8 @@ function Toggle-ServiceRegistration {
 function Remove-LauncherOnly {
     $binDir = Join-Path $script:InstallDir "bin"
     $launcherFiles = @(
-        (Join-Path $binDir "vldg.cmd"),
-        (Join-Path $binDir "vldg.ps1")
+        (Join-Path $binDir "vldb.cmd"),
+        (Join-Path $binDir "vldb.ps1")
     )
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $updated = ""
@@ -671,7 +809,7 @@ function Remove-LauncherOnly {
     Refresh-CurrentSessionEnvironment
     Remove-Item $launcherFiles -Force -ErrorAction SilentlyContinue
     Start-DeferredCleanup -Paths $launcherFiles
-    Write-Info "The vldg launcher has been removed from future sessions. Close this shell after you finish."
+    Write-Info "The vldb manager command has been removed from future sessions. Close this shell after you finish."
 }
 
 function Uninstall-All {
@@ -682,23 +820,29 @@ function Uninstall-All {
         }
     }
     Remove-LauncherOnly
-    Start-DeferredCleanup -Paths @($script:InstallDir, $script:GlobalHome)
-    Write-Info "VulcanLocalDB is being removed in the background."
+    Start-DeferredCleanup -Paths @(
+        $script:InstallDir,
+        $script:RunDir,
+        (Join-Path $script:GlobalHome "logs"),
+        $script:GlobalConfig
+    )
+    Write-Info "VulcanLocalDB program files are being removed in the background."
+    Write-Info "Database directories were preserved."
     exit 0
 }
 
 function Show-Menu {
     Write-Host ""
     Write-Host "===================================="
-    Write-Host "vldg"
+    Write-Host "VulcanLocalDB Manager Script"
     Write-Host "===================================="
     Write-Host "1. Check for updates"
     Write-Host "2. Show installed instances"
-    Write-Host "3. Modify host or port"
+    Write-Host "3. Modify host, port or data path"
     Write-Host "4. Install a single service instance"
     Write-Host "5. Uninstall a single service instance"
     Write-Host "6. Register or unregister a service instance"
-    Write-Host "7. Remove only the vldg launcher"
+    Write-Host "7. Remove only the vldb manager command"
     Write-Host "8. Uninstall everything"
     Write-Host "0. Exit"
 }

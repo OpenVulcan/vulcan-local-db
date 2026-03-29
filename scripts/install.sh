@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.4"
+SCRIPT_VERSION="0.1.6"
 REPO_SLUG="OpenVulcan/vulcan-local-db"
 REPO_URL="https://github.com/OpenVulcan/vulcan-local-db"
 RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts"
-GLOBAL_HOME="${HOME}/.vulcan/vldg"
+GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
 LANG_CODE="en"
@@ -14,6 +14,8 @@ INSTALL_TAG=""
 HOST_BIND="127.0.0.1"
 LANCEDB_PORT="50051"
 DUCKDB_PORT="50052"
+LANCEDB_ROOT="${GLOBAL_HOME}/lancedb"
+DUCKDB_ROOT="${GLOBAL_HOME}/duckdb"
 LATEST_RELEASE_JSON=""
 INSTALL_MODE="full"
 CONTROLLER_SCRIPT_VERSION="${SCRIPT_VERSION}"
@@ -302,19 +304,19 @@ get_existing_install_dir() {
 
   if [[ -f "${GLOBAL_CONFIG}" ]]; then
     config_dir="$(sed -nE 's/.*"install_dir":[[:space:]]*"([^"]+)".*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
-    if [[ -n "${config_dir}" && -x "${config_dir}/bin/vldg" ]]; then
+    if [[ -n "${config_dir}" && -x "${config_dir}/bin/vldb" ]]; then
       printf '%s' "${config_dir}"
       return 0
     fi
   fi
 
-  if [[ -n "${VULCANLOCALDB_HOME:-}" && -x "${VULCANLOCALDB_HOME}/bin/vldg" ]]; then
+  if [[ -n "${VULCANLOCALDB_HOME:-}" && -x "${VULCANLOCALDB_HOME}/bin/vldb" ]]; then
     printf '%s' "${VULCANLOCALDB_HOME}"
     return 0
   fi
 
   candidate="$(default_install_dir)"
-  if [[ -x "${candidate}/bin/vldg" ]]; then
+  if [[ -x "${candidate}/bin/vldb" ]]; then
     printf '%s' "${candidate}"
     return 0
   fi
@@ -338,6 +340,88 @@ is_valid_port() {
 
   [[ "$value" =~ ^[0-9]+$ ]] || return 1
   (( value >= 1 && value <= 65535 ))
+}
+
+default_data_root() {
+  case "$1" in
+    vldb-lancedb) printf '%s' "${GLOBAL_HOME}/lancedb" ;;
+    *) printf '%s' "${GLOBAL_HOME}/duckdb" ;;
+  esac
+}
+
+default_instance_data_path() {
+  local service="$1"
+  local instance="$2"
+  local lancedb_root="${3:-${LANCEDB_ROOT}}"
+  local duckdb_root="${4:-${DUCKDB_ROOT}}"
+
+  if [[ "${service}" == "vldb-lancedb" ]]; then
+    printf '%s' "${lancedb_root}/${instance}"
+  else
+    printf '%s' "${duckdb_root}/${instance}/duckdb.db"
+  fi
+}
+
+normalize_compare_path() {
+  local value="${1%/}"
+  printf '%s' "${value}"
+}
+
+paths_overlap() {
+  local left right
+  left="$(normalize_compare_path "$1")"
+  right="$(normalize_compare_path "$2")"
+  [[ "${left}" == "${right}" || "${left}" == "${right}/"* || "${right}" == "${left}/"* ]]
+}
+
+list_install_config_files() {
+  local install_root="${1:-${INSTALL_DIR}}"
+  local config_dir="${install_root}/config"
+
+  [[ -d "${config_dir}" ]] || return 0
+  find "${config_dir}" -maxdepth 1 -type f \( -name "vldb-lancedb-*.json" -o -name "vldb-duckdb-*.json" \) | sort
+}
+
+config_db_path() {
+  local file="$1"
+  sed -nE 's/.*"db_path":[[:space:]]*"([^"]+)".*/\1/p' "${file}" | head -n1
+}
+
+validate_data_path() {
+  local candidate_path="$1"
+  local service="$2"
+  local instance="$3"
+  local install_root="${4:-${INSTALL_DIR}}"
+  local existing_path=""
+  local existing_name=""
+  local file=""
+
+  if ! is_valid_install_dir "${candidate_path}"; then
+    line "Please use a legal absolute data path." "请输入合法的绝对数据路径。"
+    return 1
+  fi
+
+  if paths_overlap "${install_root}" "${candidate_path}"; then
+    line "Database paths must stay outside the installation directory." "数据库路径必须位于安装目录之外。"
+    return 1
+  fi
+
+  while IFS= read -r file; do
+    existing_name="$(basename "${file}" .json)"
+    if [[ "${existing_name}" == "${service}-${instance}" ]]; then
+      continue
+    fi
+
+    existing_path="$(config_db_path "${file}")"
+    [[ -n "${existing_path}" ]] || continue
+
+    if paths_overlap "${candidate_path}" "${existing_path}"; then
+      line "Data path conflicts with ${existing_name}: ${existing_path}" "数据路径与 ${existing_name} 冲突：${existing_path}"
+      return 1
+    fi
+  done < <(list_install_config_files "${install_root}")
+
+  return 0
 }
 
 extract_script_version_from_file() {
@@ -406,8 +490,8 @@ choose_language() {
 
 choose_install_mode() {
   line "Install mode:" "安装模式："
-  printf '%s\n' "$(say "1. Full install (services + controller)" "1. 完整安装（服务 + 管理脚本）")"
-  printf '%s\n' "$(say "2. Controller only" "2. 仅安装管理脚本")"
+  printf '%s\n' "$(say "1. Full install (services + manager script)" "1. 完整安装（服务 + 管理脚本）")"
+  printf '%s\n' "$(say "2. Manager script only" "2. 仅安装管理脚本")"
 
   local answer
   while true; do
@@ -417,6 +501,68 @@ choose_install_mode() {
       2) INSTALL_MODE="controller-only"; return ;;
       *) line "Please input 1 or 2." "请输入 1 或 2。" ;;
     esac
+  done
+}
+
+choose_data_roots() {
+  local lance_root duck_root
+  local default_lance default_duck
+  local default_lance_path default_duck_path
+
+  default_lance="$(default_data_root "vldb-lancedb")"
+  default_duck="$(default_data_root "vldb-duckdb")"
+
+  while true; do
+    lance_root="$(prompt_default "LanceDB data root" "LanceDB 数据根目录" "${default_lance}")"
+    if ! is_valid_install_dir "${lance_root}"; then
+      line "Invalid LanceDB data root." "LanceDB 数据根目录不合法。"
+      continue
+    fi
+    if [[ -e "${lance_root}" && ! -d "${lance_root}" ]]; then
+      line "LanceDB data root already exists and is not a directory." "LanceDB 数据根目录已存在且不是目录。"
+      continue
+    fi
+    if paths_overlap "${INSTALL_DIR}" "${lance_root}"; then
+      line "LanceDB data root must stay outside the installation directory." "LanceDB 数据根目录必须位于安装目录之外。"
+      continue
+    fi
+
+    duck_root="$(prompt_default "DuckDB data root" "DuckDB 数据根目录" "${default_duck}")"
+    if ! is_valid_install_dir "${duck_root}"; then
+      line "Invalid DuckDB data root." "DuckDB 数据根目录不合法。"
+      continue
+    fi
+    if [[ -e "${duck_root}" && ! -d "${duck_root}" ]]; then
+      line "DuckDB data root already exists and is not a directory." "DuckDB 数据根目录已存在且不是目录。"
+      continue
+    fi
+    if paths_overlap "${INSTALL_DIR}" "${duck_root}"; then
+      line "DuckDB data root must stay outside the installation directory." "DuckDB 数据根目录必须位于安装目录之外。"
+      continue
+    fi
+    if paths_overlap "${lance_root}" "${duck_root}"; then
+      line "LanceDB and DuckDB data roots must not overlap." "LanceDB 和 DuckDB 数据根目录不能重叠。"
+      continue
+    fi
+
+    default_lance_path="$(default_instance_data_path "vldb-lancedb" "default" "${lance_root}" "${duck_root}")"
+    default_duck_path="$(default_instance_data_path "vldb-duckdb" "default" "${lance_root}" "${duck_root}")"
+
+    if ! validate_data_path "${default_lance_path}" "vldb-lancedb" "default"; then
+      continue
+    fi
+    if ! validate_data_path "${default_duck_path}" "vldb-duckdb" "default"; then
+      continue
+    fi
+
+    line "LanceDB default data path: ${default_lance_path}" "LanceDB 默认数据路径：${default_lance_path}"
+    line "DuckDB default data path: ${default_duck_path}" "DuckDB 默认数据路径：${default_duck_path}"
+    if confirm_yes_no "Confirm these database locations?" "确认这些数据库位置？" "Y"; then
+      LANCEDB_ROOT="${lance_root}"
+      DUCKDB_ROOT="${duck_root}"
+      mkdir -p "${LANCEDB_ROOT}" "${DUCKDB_ROOT}"
+      return
+    fi
   done
 }
 
@@ -623,8 +769,8 @@ write_lancedb_config() {
   local instance="$1"
   local host="$2"
   local port="$3"
+  local data_path="$4"
   local config_path="${INSTALL_DIR}/config/vldb-lancedb-${instance}.json"
-  local data_path="${INSTALL_DIR}/data/lancedb/${instance}"
 
   step "Writing LanceDB config for instance '${instance}'" "正在为实例 '${instance}' 写入 LanceDB 配置"
   mkdir -p "${INSTALL_DIR}/config" "${data_path}"
@@ -641,16 +787,16 @@ write_duckdb_config() {
   local instance="$1"
   local host="$2"
   local port="$3"
+  local data_path="$4"
   local config_path="${INSTALL_DIR}/config/vldb-duckdb-${instance}.json"
-  local data_dir="${INSTALL_DIR}/data/duckdb/${instance}"
 
   step "Writing DuckDB config for instance '${instance}'" "正在为实例 '${instance}' 写入 DuckDB 配置"
-  mkdir -p "${INSTALL_DIR}/config" "${data_dir}"
+  mkdir -p "${INSTALL_DIR}/config" "$(dirname "${data_path}")"
   cat >"${config_path}" <<EOF
 {
   "host": "${host}",
   "port": ${port},
-  "db_path": "${data_dir}/duckdb.db",
+  "db_path": "${data_path}",
   "memory_limit": "2GB",
   "threads": 4
 }
@@ -665,7 +811,11 @@ write_global_config() {
   "language": "${LANG_CODE}",
   "install_dir": "${INSTALL_DIR}",
   "release_tag": "${INSTALL_TAG}",
-  "script_version": "${CONTROLLER_SCRIPT_VERSION}"
+  "script_version": "${CONTROLLER_SCRIPT_VERSION}",
+  "lancedb_root": "${LANCEDB_ROOT}",
+  "duckdb_root": "${DUCKDB_ROOT}"
+}
+EOF
 }
 
 invoke_installed_controller_if_present() {
@@ -675,14 +825,12 @@ invoke_installed_controller_if_present() {
   existing_install_dir="$(get_existing_install_dir || true)"
   [[ -n "${existing_install_dir}" ]] || return 1
 
-  controller_path="${existing_install_dir}/bin/vldg"
+  controller_path="${existing_install_dir}/bin/vldb"
   [[ -x "${controller_path}" ]] || return 1
 
   line "An existing VulcanLocalDB installation was detected at ${existing_install_dir}." "检测到已有 VulcanLocalDB 安装：${existing_install_dir}。"
-  line "Launching the local controller script so it can check for updates." "正在启动本地管理脚本，并先检查更新。"
+  line "Launching the local manager script so it can check for updates." "正在启动本地管理脚本，并先检查更新。"
   exec "${controller_path}" --from-installer
-}
-EOF
 }
 
 install_manager_script() {
@@ -690,16 +838,16 @@ install_manager_script() {
   local raw_base
   local installed_script_path
 
-  step "Installing controller script" "正在安装管理脚本"
+  step "Installing manager script" "正在安装管理脚本"
   source_dir="$(cd "$(dirname "$0")" && pwd)"
-  installed_script_path="${INSTALL_DIR}/bin/vldg"
+  installed_script_path="${INSTALL_DIR}/bin/vldb"
   mkdir -p "${INSTALL_DIR}/bin"
 
-  if [[ -f "${source_dir}/vldg" ]]; then
-    install -m 755 "${source_dir}/vldg" "${installed_script_path}"
+  if [[ -f "${source_dir}/vldb" ]]; then
+    install -m 755 "${source_dir}/vldb" "${installed_script_path}"
   else
     raw_base="${RAW_BASE_URL}"
-    download_with_progress "${raw_base}/vldg" "${installed_script_path}" "vldg"
+    download_with_progress "${raw_base}/vldb" "${installed_script_path}" "vldb"
     chmod 755 "${installed_script_path}"
   fi
 
@@ -914,6 +1062,7 @@ main() {
 
   choose_install_mode
   choose_install_dir
+  choose_data_roots
   if [[ "${INSTALL_MODE}" == "full" ]]; then
     choose_network_settings
     fetch_latest_tag
@@ -933,8 +1082,8 @@ main() {
     extract_binary "${lancedb_archive}" "vldb-lancedb" "${temp_dir}"
     extract_binary "${duckdb_archive}" "vldb-duckdb" "${temp_dir}"
 
-    write_lancedb_config "default" "${HOST_BIND}" "${LANCEDB_PORT}"
-    write_duckdb_config "default" "${HOST_BIND}" "${DUCKDB_PORT}"
+    write_lancedb_config "default" "${HOST_BIND}" "${LANCEDB_PORT}" "$(default_instance_data_path "vldb-lancedb" "default")"
+    write_duckdb_config "default" "${HOST_BIND}" "${DUCKDB_PORT}" "$(default_instance_data_path "vldb-duckdb" "default")"
   fi
 
   install_manager_script
@@ -949,10 +1098,10 @@ main() {
   if [[ "${INSTALL_MODE}" == "full" ]]; then
     line "Installation completed." "安装完成。"
   else
-    line "Controller installation completed." "管理脚本安装完成。"
+    line "Manager script installation completed." "管理脚本安装完成。"
   fi
-  line "Launcher script: ${INSTALL_DIR}/bin/vldg" "管理脚本：${INSTALL_DIR}/bin/vldg"
-  line "Re-open your shell or source your profile to use 'vldg' from PATH." "重新打开终端或重新加载 shell 配置后，即可直接使用 'vldg'。"
+  line "Manager command: ${INSTALL_DIR}/bin/vldb" "管理命令：${INSTALL_DIR}/bin/vldb"
+  line "Re-open your shell or source your profile to use 'vldb' from PATH." "重新打开终端或重新加载 shell 配置后，即可直接使用 'vldb'。"
 }
 
 main "$@"

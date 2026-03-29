@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.4"
-GLOBAL_HOME="${HOME}/.vulcan/vldg"
+SCRIPT_VERSION="0.1.6"
+GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
 LANG_CODE="en"
 INSTALL_DIR=""
+LANCEDB_ROOT="${GLOBAL_HOME}/lancedb"
+DUCKDB_ROOT="${GLOBAL_HOME}/duckdb"
 REPO_SLUG="OpenVulcan/vulcan-local-db"
 REPO_URL="https://github.com/OpenVulcan/vulcan-local-db"
 RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts"
@@ -229,6 +231,7 @@ try_fetch_latest_tag() {
 
 resolve_install_dir() {
   local script_dir
+  local config_value
 
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if [[ -f "${GLOBAL_CONFIG}" ]]; then
@@ -242,6 +245,14 @@ resolve_install_dir() {
   if [[ -f "${GLOBAL_CONFIG}" ]]; then
     INSTALL_TAG="$(read_json_string "${GLOBAL_CONFIG}" "release_tag")"
     INSTALLED_SCRIPT_VERSION="$(read_json_string "${GLOBAL_CONFIG}" "script_version")"
+    config_value="$(read_json_string "${GLOBAL_CONFIG}" "lancedb_root")"
+    if [[ -n "${config_value}" ]]; then
+      LANCEDB_ROOT="${config_value}"
+    fi
+    config_value="$(read_json_string "${GLOBAL_CONFIG}" "duckdb_root")"
+    if [[ -n "${config_value}" ]]; then
+      DUCKDB_ROOT="${config_value}"
+    fi
   fi
 
   INSTALLED_SCRIPT_VERSION="${INSTALLED_SCRIPT_VERSION:-${SCRIPT_VERSION}}"
@@ -264,7 +275,9 @@ write_global_config() {
   "language": "${LANG_CODE}",
   "install_dir": "${INSTALL_DIR}",
   "release_tag": "${INSTALL_TAG}",
-  "script_version": "${SCRIPT_VERSION}"
+  "script_version": "${SCRIPT_VERSION}",
+  "lancedb_root": "${LANCEDB_ROOT}",
+  "duckdb_root": "${DUCKDB_ROOT}"
 }
 EOF
 }
@@ -462,6 +475,31 @@ is_valid_instance_name() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$ ]]
 }
 
+default_instance_data_path() {
+  local service="$1"
+  local instance="$2"
+  local lancedb_root="${3:-${LANCEDB_ROOT}}"
+  local duckdb_root="${4:-${DUCKDB_ROOT}}"
+
+  if [[ "${service}" == "vldb-lancedb" ]]; then
+    printf '%s' "${lancedb_root}/${instance}"
+  else
+    printf '%s' "${duckdb_root}/${instance}/duckdb.db"
+  fi
+}
+
+normalize_compare_path() {
+  local value="${1%/}"
+  printf '%s' "${value}"
+}
+
+paths_overlap() {
+  local left right
+  left="$(normalize_compare_path "$1")"
+  right="$(normalize_compare_path "$2")"
+  [[ "${left}" == "${right}" || "${left}" == "${right}/"* || "${right}" == "${left}/"* ]]
+}
+
 list_config_files() {
   find "${INSTALL_DIR}/config" -maxdepth 1 -type f \( -name "vldb-lancedb-*.json" -o -name "vldb-duckdb-*.json" \) 2>/dev/null | sort
 }
@@ -513,11 +551,10 @@ write_service_config() {
   local instance="$2"
   local host="$3"
   local port="$4"
+  local data_path="$5"
   local config_path
-  local data_path
 
   config_path="$(instance_config_path "${service}" "${instance}")"
-  data_path="$(instance_data_path "${service}" "${instance}")"
 
   mkdir -p "${INSTALL_DIR}/config"
   if [[ "${service}" == "vldb-lancedb" ]]; then
@@ -549,6 +586,44 @@ config_host() {
 
 config_port() {
   read_json_number "$1" "port"
+}
+
+config_db_path() {
+  read_json_string "$1" "db_path"
+}
+
+validate_data_path() {
+  local candidate_path="$1"
+  local service="$2"
+  local instance="$3"
+  local existing_path=""
+  local existing_name=""
+  local file=""
+
+  [[ -n "${candidate_path}" && "${candidate_path}" = /* ]] || {
+    line "Please use a legal absolute data path." "请输入合法的绝对数据路径。"
+    return 1
+  }
+
+  if paths_overlap "${INSTALL_DIR}" "${candidate_path}"; then
+    line "Database paths must stay outside the installation directory." "数据库路径必须位于安装目录之外。"
+    return 1
+  fi
+
+  while IFS= read -r file; do
+    existing_name="$(basename "${file}" .json)"
+    if [[ "${existing_name}" == "${service}-${instance}" ]]; then
+      continue
+    fi
+    existing_path="$(config_db_path "${file}")"
+    [[ -n "${existing_path}" ]] || continue
+    if paths_overlap "${candidate_path}" "${existing_path}"; then
+      line "Data path conflicts with ${existing_name}: ${existing_path}" "数据路径与 ${existing_name} 冲突：${existing_path}"
+      return 1
+    fi
+  done < <(list_config_files)
+
+  return 0
 }
 
 linux_unit_path() {
@@ -777,20 +852,20 @@ check_updates() {
   local cmp
 
   line "Checking for updates..." "正在检查更新……"
-  remote_script_version="$(try_fetch_remote_script_version "vldg" || true)"
+  remote_script_version="$(try_fetch_remote_script_version "vldb" || true)"
   latest_tag="$(try_fetch_latest_tag || true)"
 
-  line "Current controller script version: ${SCRIPT_VERSION}" "当前管理脚本版本：${SCRIPT_VERSION}"
+  line "Current manager script version: ${SCRIPT_VERSION}" "当前管理脚本版本：${SCRIPT_VERSION}"
   if [[ -n "${remote_script_version}" ]]; then
-    line "Latest controller script version: ${remote_script_version}" "最新管理脚本版本：${remote_script_version}"
+    line "Latest manager script version: ${remote_script_version}" "最新管理脚本版本：${remote_script_version}"
     cmp="$(version_compare "${remote_script_version}" "${SCRIPT_VERSION}")"
     if [[ "${cmp}" == "1" ]]; then
-      line "Controller script update available." "管理脚本有可用更新。"
+      line "Manager script update available." "管理脚本有可用更新。"
     else
-      line "Controller script is up to date." "管理脚本已是最新。"
+      line "Manager script is up to date." "管理脚本已是最新。"
     fi
   else
-    line "Latest controller script version: unavailable" "无法获取最新管理脚本版本"
+    line "Latest manager script version: unavailable" "无法获取最新管理脚本版本"
   fi
 
   if [[ -n "${INSTALL_TAG}" ]]; then
@@ -822,6 +897,7 @@ configure_instance() {
   local instance
   local host
   local port
+  local data_path
   local filename
 
   file="$(choose_instance_file)" || return
@@ -831,18 +907,23 @@ configure_instance() {
   instance="${PARSED_INSTANCE}"
   host="$(config_host "${file}")"
   port="$(config_port "${file}")"
+  data_path="$(config_db_path "${file}")"
 
   while true; do
-    host="$(prompt_config_value "Host" "绑定 IP" "${host}")"
+    host="$(prompt_config_value "Bind IP" "绑定 IP" "${host}")"
     port="$(prompt_config_value "Port" "端口" "${port}")"
     is_valid_port "${port}" || {
       line "Invalid port." "端口不合法。"
       continue
     }
+
+    data_path="$(prompt_config_value "Data path" "数据路径" "${data_path}")"
+    validate_data_path "${data_path}" "${service}" "${instance}" || continue
     break
   done
 
-  write_service_config "${service}" "${instance}" "${host}" "${port}"
+  write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}"
+  write_global_config
   if is_registered "${service}" "${instance}"; then
     unregister_instance "${service}" "${instance}"
     register_instance "${service}" "${instance}"
@@ -864,6 +945,9 @@ install_single_instance() {
   local instance
   local host
   local port
+  local data_path
+  local default_port
+  local default_data_path
 
   service="$(choose_service)"
   ensure_service_binary_installed "${service}"
@@ -881,17 +965,24 @@ install_single_instance() {
   done
 
   host="$(prompt_config_value "Bind IP" "绑定 IP" "127.0.0.1")"
+  default_port="50051"
+  if [[ "${service}" == "vldb-duckdb" ]]; then
+    default_port="50052"
+  fi
   while true; do
-    if [[ "${service}" == "vldb-lancedb" ]]; then
-      port="$(prompt_config_value "Port" "端口" "50051")"
-    else
-      port="$(prompt_config_value "Port" "端口" "50052")"
-    fi
-    is_valid_port "${port}" && break
-    line "Invalid port." "端口不合法。"
+    port="$(prompt_config_value "Port" "端口" "${default_port}")"
+    is_valid_port "${port}" || {
+      line "Invalid port." "端口不合法。"
+      continue
+    }
+
+    default_data_path="$(default_instance_data_path "${service}" "${instance}")"
+    data_path="$(prompt_config_value "Data path" "数据路径" "${default_data_path}")"
+    validate_data_path "${data_path}" "${service}" "${instance}" || continue
+    break
   done
 
-  write_service_config "${service}" "${instance}" "${host}" "${port}"
+  write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}"
   write_global_config
   if confirm_yes_no "Register this instance as a service now?" "现在将该实例注册为服务？" "N"; then
     register_instance "${service}" "${instance}"
@@ -910,18 +1001,14 @@ uninstall_single_instance() {
   parse_instance_meta "${filename}"
   service="${PARSED_SERVICE}"
   instance="${PARSED_INSTANCE}"
-  data_path="$(instance_data_path "${service}" "${instance}")"
+  data_path="$(config_db_path "${file}")"
 
   if is_registered "${service}" "${instance}"; then
     unregister_instance "${service}" "${instance}"
   fi
 
   rm -f "${file}"
-  if [[ "${service}" == "vldb-lancedb" ]]; then
-    rm -rf "${data_path}"
-  else
-    rm -rf "$(dirname "${data_path}")"
-  fi
+  line "Database files were preserved at: ${data_path}" "数据库文件已保留在：${data_path}"
 }
 
 toggle_service_registration() {
@@ -950,6 +1037,7 @@ print_status() {
   local instance
   local host
   local port
+  local db_path
   local status
 
   while IFS= read -r file; do
@@ -959,12 +1047,13 @@ print_status() {
     instance="${PARSED_INSTANCE}"
     host="$(config_host "${file}")"
     port="$(config_port "${file}")"
+    db_path="$(config_db_path "${file}")"
     if is_registered "${service}" "${instance}"; then
       status="$(say "registered" "已注册")"
     else
       status="$(say "not registered" "未注册")"
     fi
-    printf '%s\n' "$(service_display_name "${service}") ${instance} | ${host}:${port} | ${status}"
+    printf '%s\n' "$(service_display_name "${service}") ${instance} | ${host}:${port} | ${status} | ${db_path}"
   done < <(list_config_files)
 }
 
@@ -989,8 +1078,8 @@ remove_profile_exports() {
 
 uninstall_launcher_only() {
   remove_profile_exports
-  rm -f "${INSTALL_DIR}/bin/vldg"
-  line "The vldg launcher has been removed from future shell sessions." "vldg 管理脚本已经从后续 shell 会话中移除。"
+  rm -f "${INSTALL_DIR}/bin/vldb"
+  line "The vldb manager command has been removed from future shell sessions." "vldb 管理命令已经从后续 shell 会话中移除。"
 }
 
 uninstall_all() {
@@ -1010,24 +1099,27 @@ uninstall_all() {
   done < <(list_config_files)
 
   remove_profile_exports
-  rm -rf "${INSTALL_DIR}" "${GLOBAL_HOME}"
-  line "VulcanLocalDB has been removed." "VulcanLocalDB 已卸载。"
+  rm -rf "${INSTALL_DIR}" "${RUNNER_DIR}" "${GLOBAL_HOME}/logs"
+  rm -f "${GLOBAL_CONFIG}"
+  rmdir "${GLOBAL_HOME}" >/dev/null 2>&1 || true
+  line "VulcanLocalDB program files have been removed." "VulcanLocalDB 程序文件已移除。"
+  line "Database directories were preserved." "数据库目录已保留。"
   exit 0
 }
 
 show_menu() {
   printf '\n'
   printf '%s\n' "===================================="
-  printf '%s\n' "vldg"
+  printf '%s\n' "VulcanLocalDB Manager Script"
   printf '%s\n' "===================================="
   printf '%s\n' "$(say "1. Switch language" "1. 切换语言")"
   printf '%s\n' "$(say "2. Check for updates" "2. 检查更新")"
   printf '%s\n' "$(say "3. Show installed instances" "3. 查看已安装实例")"
-  printf '%s\n' "$(say "4. Modify host or port" "4. 修改 IP 或端口")"
+  printf '%s\n' "$(say "4. Modify host, port or data path" "4. 修改 IP、端口或数据路径")"
   printf '%s\n' "$(say "5. Install a single service instance" "5. 单独安装一个服务实例")"
   printf '%s\n' "$(say "6. Uninstall a single service instance" "6. 单独卸载一个服务实例")"
   printf '%s\n' "$(say "7. Register or unregister a service instance" "7. 注册或取消注册一个服务实例")"
-  printf '%s\n' "$(say "8. Remove only the vldg launcher" "8. 仅卸载 vldg 管理脚本")"
+  printf '%s\n' "$(say "8. Remove only the vldb manager command" "8. 仅卸载 vldb 管理命令")"
   printf '%s\n' "$(say "9. Uninstall everything" "9. 卸载全部")"
   printf '%s\n' "$(say "0. Exit" "0. 退出")"
 }

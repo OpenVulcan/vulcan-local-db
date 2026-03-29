@@ -1,10 +1,10 @@
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.4"
+$ScriptVersion = "0.1.6"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
-$GlobalHome = Join-Path $HOME ".vulcan\vldg"
+$GlobalHome = Join-Path $HOME ".vulcan\vldb"
 $GlobalConfig = Join-Path $GlobalHome "config.json"
 $RunDir = Join-Path $GlobalHome "run"
 $InstallDir = $null
@@ -12,9 +12,11 @@ $ReleaseTag = $null
 $HostBind = "127.0.0.1"
 $LanceDbPort = 50051
 $DuckDbPort = 50052
+$LanceDbRoot = Join-Path $GlobalHome "lancedb"
+$DuckDbRoot = Join-Path $GlobalHome "duckdb"
 $InstallMode = "full"
 $WinSWVersion = "v2.12.0"
-$ControllerScriptVersion = $ScriptVersion
+$ManagerScriptVersion = $ScriptVersion
 
 try {
     [Net.ServicePointManager]::SecurityProtocol = `
@@ -126,7 +128,7 @@ function Get-ExistingInstallDir {
     $candidates += (Get-DefaultInstallDir)
 
     foreach ($candidate in ($candidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)) {
-        $controllerPath = Join-Path $candidate "bin\vldg.ps1"
+        $controllerPath = Join-Path $candidate "bin\vldb.ps1"
         if (Test-Path $controllerPath) {
             return [System.IO.Path]::GetFullPath($candidate)
         }
@@ -157,9 +159,137 @@ function Test-ValidPort {
     return $port -ge 1 -and $port -le 65535
 }
 
+function Get-DefaultDataRoot {
+    param([string]$Service)
+
+    if ($Service -eq "vldb-lancedb") {
+        return (Join-Path $script:GlobalHome "lancedb")
+    }
+    return (Join-Path $script:GlobalHome "duckdb")
+}
+
+function Get-DefaultInstanceDataPath {
+    param(
+        [string]$Service,
+        [string]$Instance,
+        [string]$LanceRoot = $script:LanceDbRoot,
+        [string]$DuckRoot = $script:DuckDbRoot
+    )
+
+    if ($Service -eq "vldb-lancedb") {
+        return (Join-Path $LanceRoot $Instance)
+    }
+    return (Join-Path (Join-Path $DuckRoot $Instance) "duckdb.db")
+}
+
+function Resolve-NormalizedPath {
+    param([string]$PathValue)
+
+    $fullPath = [System.IO.Path]::GetFullPath($PathValue)
+    if ($fullPath.Length -gt 3) {
+        $fullPath = $fullPath.TrimEnd('\', '/')
+    }
+    return $fullPath
+}
+
+function Test-PathsOverlap {
+    param([string]$LeftPath, [string]$RightPath)
+
+    $leftNormalized = Resolve-NormalizedPath $LeftPath
+    $rightNormalized = Resolve-NormalizedPath $RightPath
+
+    if ([string]::Equals($leftNormalized, $rightNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    $leftPrefix = $leftNormalized + $separator
+    $rightPrefix = $rightNormalized + $separator
+
+    return $rightNormalized.StartsWith($leftPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $leftNormalized.StartsWith($rightPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-ConfigDbPath {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) { return $null }
+    try {
+        return (Get-Content $Path -Raw | ConvertFrom-Json).db_path
+    } catch {
+        return $null
+    }
+}
+
+function Get-ConfigFilesForInstallRoot {
+    param([string]$InstallRoot)
+
+    $configDir = Join-Path $InstallRoot "config"
+    if (-not (Test-Path $configDir)) {
+        return @()
+    }
+
+    return Get-ChildItem -Path $configDir -File | Where-Object {
+        $_.Name -like "vldb-lancedb-*.json" -or $_.Name -like "vldb-duckdb-*.json"
+    }
+}
+
+function Get-ConflictMessageForDataPath {
+    param(
+        [string]$CandidatePath,
+        [string]$Service,
+        [string]$Instance,
+        [string]$InstallRoot = $script:InstallDir
+    )
+
+    foreach ($file in (Get-ConfigFilesForInstallRoot -InstallRoot $InstallRoot)) {
+        $parts = $file.BaseName -split "-"
+        $existingService = ($parts[0..1] -join "-")
+        $existingInstance = ($parts[2..($parts.Length - 1)] -join "-")
+        if ($existingService -eq $Service -and $existingInstance -eq $Instance) {
+            continue
+        }
+
+        $existingPath = Get-ConfigDbPath $file.FullName
+        if ([string]::IsNullOrWhiteSpace($existingPath)) {
+            continue
+        }
+
+        if (Test-PathsOverlap $CandidatePath $existingPath) {
+            return "Data path conflicts with ${existingService}/${existingInstance}: $existingPath"
+        }
+    }
+
+    return $null
+}
+
+function Get-DataPathValidationError {
+    param(
+        [string]$CandidatePath,
+        [string]$Service,
+        [string]$Instance,
+        [string]$InstallRoot = $script:InstallDir
+    )
+
+    if (-not (Test-ValidInstallDir $CandidatePath)) {
+        return "Please use a legal absolute path."
+    }
+
+    if (Test-PathsOverlap $InstallRoot $CandidatePath) {
+        return "Database paths must stay outside the installation directory."
+    }
+
+    $conflict = Get-ConflictMessageForDataPath -CandidatePath $CandidatePath -Service $Service -Instance $Instance -InstallRoot $InstallRoot
+    if ($conflict) {
+        return $conflict
+    }
+
+    return $null
+}
+
 function Choose-InstallMode {
-    Write-Host "1. Full install (services + controller)"
-    Write-Host "2. Controller only"
+    Write-Host "1. Full install (services + manager script)"
+    Write-Host "2. Manager script only"
     while ($true) {
         $choice = Read-Host "Select mode [1]"
         switch ($choice) {
@@ -198,6 +328,69 @@ function Choose-InstallDir {
         Write-Info "Install to: $candidate"
         if (Confirm-Choice "Confirm this installation directory?" "Y") {
             $script:InstallDir = [System.IO.Path]::GetFullPath($candidate)
+            return
+        }
+    }
+}
+
+function Choose-DataRoots {
+    $defaultLanceRoot = Get-DefaultDataRoot "vldb-lancedb"
+    $defaultDuckRoot = Get-DefaultDataRoot "vldb-duckdb"
+
+    while ($true) {
+        $lanceRoot = Read-Default "LanceDB data root" $defaultLanceRoot
+        if (-not (Test-ValidInstallDir $lanceRoot)) {
+            Write-Info "Invalid LanceDB data root."
+            continue
+        }
+        if (Test-PathsOverlap $script:InstallDir $lanceRoot) {
+            Write-Info "LanceDB data root must stay outside the installation directory."
+            continue
+        }
+        if ((Test-Path $lanceRoot) -and -not (Test-Path $lanceRoot -PathType Container)) {
+            Write-Info "LanceDB data root already exists and is not a directory."
+            continue
+        }
+
+        $duckRoot = Read-Default "DuckDB data root" $defaultDuckRoot
+        if (-not (Test-ValidInstallDir $duckRoot)) {
+            Write-Info "Invalid DuckDB data root."
+            continue
+        }
+        if (Test-PathsOverlap $script:InstallDir $duckRoot) {
+            Write-Info "DuckDB data root must stay outside the installation directory."
+            continue
+        }
+        if ((Test-Path $duckRoot) -and -not (Test-Path $duckRoot -PathType Container)) {
+            Write-Info "DuckDB data root already exists and is not a directory."
+            continue
+        }
+        if (Test-PathsOverlap $lanceRoot $duckRoot) {
+            Write-Info "LanceDB and DuckDB data roots must not overlap."
+            continue
+        }
+
+        $defaultLancePath = Get-DefaultInstanceDataPath -Service "vldb-lancedb" -Instance "default" -LanceRoot $lanceRoot -DuckRoot $duckRoot
+        $defaultDuckPath = Get-DefaultInstanceDataPath -Service "vldb-duckdb" -Instance "default" -LanceRoot $lanceRoot -DuckRoot $duckRoot
+
+        $lanceError = Get-DataPathValidationError -CandidatePath $defaultLancePath -Service "vldb-lancedb" -Instance "default"
+        if ($lanceError) {
+            Write-Info $lanceError
+            continue
+        }
+
+        $duckError = Get-DataPathValidationError -CandidatePath $defaultDuckPath -Service "vldb-duckdb" -Instance "default"
+        if ($duckError) {
+            Write-Info $duckError
+            continue
+        }
+
+        Write-Info "LanceDB default data path: $defaultLancePath"
+        Write-Info "DuckDB default data path: $defaultDuckPath"
+        if (Confirm-Choice "Confirm these database locations?" "Y") {
+            $script:LanceDbRoot = Resolve-NormalizedPath $lanceRoot
+            $script:DuckDbRoot = Resolve-NormalizedPath $duckRoot
+            New-Item -ItemType Directory -Force -Path $script:LanceDbRoot, $script:DuckDbRoot | Out-Null
             return
         }
     }
@@ -337,13 +530,13 @@ function Invoke-InstalledControllerIfPresent {
         return $false
     }
 
-    $controllerPath = Join-Path $existingInstallDir "bin\vldg.ps1"
+    $controllerPath = Join-Path $existingInstallDir "bin\vldb.ps1"
     if (-not (Test-Path $controllerPath)) {
         return $false
     }
 
     Write-Info "An existing VulcanLocalDB installation was detected at $existingInstallDir."
-    Write-Info "Launching the local controller script so it can check for updates."
+    Write-Info "Launching the local manager script so it can check for updates."
     & $controllerPath -FromInstaller
     return $true
 }
@@ -420,30 +613,28 @@ function Extract-Binary {
 }
 
 function Write-LanceDbConfig {
-    param([string]$Instance, [string]$BindHost, [int]$Port)
+    param([string]$Instance, [string]$BindHost, [int]$Port, [string]$DataPath)
     Write-Step "Writing LanceDB config for instance '$Instance'"
     $configDir = Join-Path $script:InstallDir "config"
-    $dataDir = Join-Path $script:InstallDir "data\lancedb\$Instance"
-    New-Item -ItemType Directory -Force -Path $configDir, $dataDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $configDir, $DataPath | Out-Null
 
     @{
         host = $BindHost
         port = $Port
-        db_path = $dataDir
+        db_path = $DataPath
     } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $configDir "vldb-lancedb-$Instance.json")
 }
 
 function Write-DuckDbConfig {
-    param([string]$Instance, [string]$BindHost, [int]$Port)
+    param([string]$Instance, [string]$BindHost, [int]$Port, [string]$DataPath)
     Write-Step "Writing DuckDB config for instance '$Instance'"
     $configDir = Join-Path $script:InstallDir "config"
-    $dataDir = Join-Path $script:InstallDir "data\duckdb\$Instance"
-    New-Item -ItemType Directory -Force -Path $configDir, $dataDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $configDir, (Split-Path -Parent $DataPath) | Out-Null
 
     @{
         host = $BindHost
         port = $Port
-        db_path = (Join-Path $dataDir "duckdb.db")
+        db_path = $DataPath
         memory_limit = "2GB"
         threads = 4
     } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $configDir "vldb-duckdb-$Instance.json")
@@ -468,7 +659,9 @@ function Write-GlobalConfig {
         language = "en"
         install_dir = $script:InstallDir
         release_tag = $script:ReleaseTag
-        script_version = $script:ControllerScriptVersion
+        script_version = $script:ManagerScriptVersion
+        lancedb_root = $script:LanceDbRoot
+        duckdb_root = $script:DuckDbRoot
     } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $script:GlobalConfig
 }
 
@@ -476,29 +669,29 @@ function Install-ManagerScripts {
     $sourcePath = $PSCommandPath
     $sourceDir = $null
     $binDir = Join-Path $script:InstallDir "bin"
-    $managerScript = Join-Path $binDir "vldg.ps1"
-    Write-Step "Installing controller scripts"
+    $managerScript = Join-Path $binDir "vldb.ps1"
+    Write-Step "Installing manager scripts"
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
     if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
         $sourceDir = Split-Path -Parent $sourcePath
     }
 
-    if ($sourceDir -and (Test-Path (Join-Path $sourceDir "vldg.ps1")) -and (Test-Path (Join-Path $sourceDir "vldg.cmd"))) {
-        Write-Step "Copying bundled controller scripts"
-        Copy-Item (Join-Path $sourceDir "vldg.ps1") $managerScript -Force
-        Copy-Item (Join-Path $sourceDir "vldg.cmd") (Join-Path $binDir "vldg.cmd") -Force
+    if ($sourceDir -and (Test-Path (Join-Path $sourceDir "vldb.ps1")) -and (Test-Path (Join-Path $sourceDir "vldb.cmd"))) {
+        Write-Step "Copying bundled manager scripts"
+        Copy-Item (Join-Path $sourceDir "vldb.ps1") $managerScript -Force
+        Copy-Item (Join-Path $sourceDir "vldb.cmd") (Join-Path $binDir "vldb.cmd") -Force
     } else {
-        Write-Step "Downloading controller scripts from GitHub"
-        Download-FileWithProgress -Url "$RawBaseUrl/vldg.ps1" -OutFile $managerScript -Label "vldg.ps1"
-        Download-FileWithProgress -Url "$RawBaseUrl/vldg.cmd" -OutFile (Join-Path $binDir "vldg.cmd") -Label "vldg.cmd"
+        Write-Step "Downloading manager scripts from GitHub"
+        Download-FileWithProgress -Url "$RawBaseUrl/vldb.ps1" -OutFile $managerScript -Label "vldb.ps1"
+        Download-FileWithProgress -Url "$RawBaseUrl/vldb.cmd" -OutFile (Join-Path $binDir "vldb.cmd") -Label "vldb.cmd"
     }
 
     $detectedVersion = Get-ScriptVersionFromFile $managerScript
     if ($detectedVersion) {
-        $script:ControllerScriptVersion = $detectedVersion
+        $script:ManagerScriptVersion = $detectedVersion
     }
-    Write-Info "Controller script version: $($script:ControllerScriptVersion)"
+    Write-Info "Manager script version: $($script:ManagerScriptVersion)"
 }
 
 function Ensure-PathExports {
@@ -681,6 +874,7 @@ function Main {
 
         Choose-InstallMode
         Choose-InstallDir
+        Choose-DataRoots
 
         if ($script:InstallMode -eq "full") {
             Choose-NetworkSettings
@@ -696,8 +890,8 @@ function Main {
             Extract-Binary -ArchivePath $lancedbArchive -Service "vldb-lancedb" -TempDir $tempDir
             Extract-Binary -ArchivePath $duckdbArchive -Service "vldb-duckdb" -TempDir $tempDir
 
-            Write-LanceDbConfig -Instance "default" -BindHost $HostBind -Port $LanceDbPort
-            Write-DuckDbConfig -Instance "default" -BindHost $HostBind -Port $DuckDbPort
+            Write-LanceDbConfig -Instance "default" -BindHost $HostBind -Port $LanceDbPort -DataPath (Get-DefaultInstanceDataPath -Service "vldb-lancedb" -Instance "default")
+            Write-DuckDbConfig -Instance "default" -BindHost $HostBind -Port $DuckDbPort -DataPath (Get-DefaultInstanceDataPath -Service "vldb-duckdb" -Instance "default")
         }
 
         Install-ManagerScripts
@@ -713,9 +907,9 @@ function Main {
         if ($script:InstallMode -eq "full") {
             Write-Info "Installation completed."
         } else {
-            Write-Info "Controller installation completed."
+            Write-Info "Manager script installation completed."
         }
-        Write-Info "Launcher: $InstallDir\bin\vldg.cmd"
+        Write-Info "Launcher: $InstallDir\bin\vldb.cmd"
     } finally {
         Write-Step "Cleaning temporary workspace"
         Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue

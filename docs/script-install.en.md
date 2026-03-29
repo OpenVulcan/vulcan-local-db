@@ -10,7 +10,7 @@ Use the script installer when you want:
 - automatic download of the correct release archives
 - default config generation for `vldb-lancedb` and `vldb-duckdb`
 - optional service registration
-- the `vldg` management command installed on the local machine
+- the `vldb` manager command installed on the local machine
 
 Repository source:
 
@@ -54,26 +54,29 @@ If your network path or proxy serves a stale cached copy of the `main` branch sc
 The installer can:
 
 - show the current installer version and latest release tag
-- install the full stack or only the controller script
+- install the full stack or only the manager script
 - choose the install directory
 - configure host and default ports
 - download the matching GitHub Release archives
 - install `vldb-lancedb` and `vldb-duckdb`
 - generate default config files
-- install the `vldg` management command
+- install the `vldb` manager command
 - optionally register services for auto-start and auto-restart
+- separate LanceDB and DuckDB data roots outside the installation directory by default
 
 The installer stores global settings here:
 
-- Linux and macOS: `~/.vulcan/vldg/config.json`
-- Windows: `%USERPROFILE%\.vulcan\vldg\config.json`
+- Linux and macOS: `~/.vulcan/vldb/config.json`
+- Windows: `%USERPROFILE%\.vulcan\vldb\config.json`
 
 The config file records:
 
 - selected language
 - installation directory
 - installed release tag
-- installed controller script version
+- installed manager script version
+- default LanceDB data root
+- default DuckDB data root
 
 ## Dependency Handling
 
@@ -88,26 +91,26 @@ Typical dependencies:
 
 ## After Installation
 
-The controller command is:
+The manager command is:
 
-- Linux and macOS: `vldg`
-- Windows: `vldg.cmd`
+- Linux and macOS: `vldb`
+- Windows: `vldb.cmd`
 
 Examples:
 
 Linux or macOS:
 
 ```bash
-vldg
+vldb
 ```
 
 Windows:
 
 ```powershell
-vldg.cmd
+vldb.cmd
 ```
 
-The controller can manage installed instances, adjust IP and port values, register or unregister services, check updates, and remove instances.
+The `VulcanLocalDB Manager Script` can manage installed instances, adjust IP, port, and data path values, register or unregister services, check updates, and remove instances without deleting preserved database files.
 
 ## Related Guides
 
