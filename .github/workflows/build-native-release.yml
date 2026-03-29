@@ -40,6 +40,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # --- LanceDB ---
           - service: vldb-lancedb
             binary: vldb-lancedb
             runner: ${{ inputs.lancedb_linux_runner || 'ubuntu-24.04' }}
@@ -52,7 +53,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: macos-13
+            runner: macos-15
             runner_mode: fixed
             target: x86_64-apple-darwin
           - service: vldb-lancedb
@@ -65,6 +66,8 @@ jobs:
             runner: windows-latest
             runner_mode: fixed
             target: x86_64-pc-windows-msvc
+            
+          # --- DuckDB ---
           - service: vldb-duckdb
             binary: vldb-duckdb
             runner: ${{ inputs.duckdb_linux_runner || 'ubuntu-24.04' }}
@@ -77,7 +80,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: macos-13
+            runner: macos-15
             runner_mode: fixed
             target: x86_64-apple-darwin
           - service: vldb-duckdb
@@ -271,7 +274,6 @@ jobs:
           service_dir="$GITHUB_WORKSPACE/$SERVICE"
           cargo_toml="$service_dir/Cargo.toml"
           
-          # 提取版本号
           version="$(sed -nE 's/^version\s*=\s*"([^"]+)"/\1/p' "$cargo_toml" | head -n1)"
           if [[ -z "$version" ]]; then
             version="unknown"
@@ -316,14 +318,12 @@ jobs:
 
           rm -f "$archive_path" "$checksum_path"
 
-          # 【完美替代方案】：纯 Bash 打包，规避一切 YAML 缩进错误
           if [[ "$archive_ext" == ".zip" ]]; then
             (cd "$dist_dir" && zip -r -q "$(basename "$archive_path")" "$package_name")
           else
             tar -czf "$archive_path" -C "$dist_dir" "$package_name"
           fi
 
-          # 跨平台 (Linux/macOS) 的 SHA256 校验和生成
           cd "$dist_dir"
           filename="$(basename "$archive_path")"
           if command -v sha256sum >/dev/null 2>&1; then
