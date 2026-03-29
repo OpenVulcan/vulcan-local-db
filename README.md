@@ -85,6 +85,37 @@ Detailed binary install guides:
 - English: [docs/native-install.en.md](./docs/native-install.en.md)
 - Chinese: [docs/native-install.zh-CN.md](./docs/native-install.zh-CN.md)
 
+### Script Installer From GitHub
+
+If you want a guided native installation flow, use the installer scripts published from this repository.
+
+Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh -o /tmp/vulcanlocaldb-install.sh
+bash /tmp/vulcanlocaldb-install.sh
+```
+
+macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh -o /tmp/vulcanlocaldb-install.sh
+bash /tmp/vulcanlocaldb-install.sh
+```
+
+Windows PowerShell:
+
+```powershell
+$installer = Join-Path $env:TEMP "VulcanLocalDB-install.ps1"
+Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.ps1 -OutFile $installer
+powershell -NoProfile -ExecutionPolicy Bypass -File $installer
+```
+
+Detailed script install guides:
+
+- English: [docs/script-install.en.md](./docs/script-install.en.md)
+- Chinese: [docs/script-install.zh-CN.md](./docs/script-install.zh-CN.md)
+
 ## Developer Setup
 
 ### Build From Source
@@ -123,6 +154,9 @@ For local image builds, Dockerfiles, compose-based development, and custom Docke
 - Native binary install guide:
   - English: [docs/native-install.en.md](./docs/native-install.en.md)
   - Chinese: [docs/native-install.zh-CN.md](./docs/native-install.zh-CN.md)
+- Script installer guide:
+  - English: [docs/script-install.en.md](./docs/script-install.en.md)
+  - Chinese: [docs/script-install.zh-CN.md](./docs/script-install.zh-CN.md)
 - Docker quick install guide:
   - English: [docs/docker-install.en.md](./docs/docker-install.en.md)
   - Chinese: [docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)

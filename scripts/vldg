@@ -1,0 +1,1055 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_VERSION="0.1.0"
+GLOBAL_HOME="${HOME}/.vulcan/vldg"
+GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
+RUNNER_DIR="${GLOBAL_HOME}/run"
+LANG_CODE="en"
+INSTALL_DIR=""
+REPO_SLUG="OpenVulcan/vulcan-local-db"
+REPO_URL="https://github.com/OpenVulcan/vulcan-local-db"
+RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts"
+INSTALL_TAG=""
+INSTALLED_SCRIPT_VERSION="${SCRIPT_VERSION}"
+LATEST_RELEASE_JSON=""
+PARSED_SERVICE=""
+PARSED_INSTANCE=""
+
+say() {
+  if [[ "${LANG_CODE}" == "zh-CN" ]]; then
+    printf '%s' "$2"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+line() {
+  printf '%s\n' "$(say "$1" "$2")"
+}
+
+confirm_yes_no() {
+  local prompt_en="$1"
+  local prompt_zh="$2"
+  local default_answer="${3:-Y}"
+  local answer
+  local normalized_default
+
+  if [[ "${default_answer}" =~ ^[Nn]$ ]]; then
+    normalized_default="N"
+  else
+    normalized_default="Y"
+  fi
+
+  while true; do
+    read -r -p "$(say "$prompt_en [$normalized_default]: " "$prompt_zh [$normalized_default]: ")" answer
+    answer="${answer:-$normalized_default}"
+    case "${answer}" in
+      [Yy]) return 0 ;;
+      [Nn]) return 1 ;;
+      *) line "Please input Y or N." "请输入 Y 或 N。" ;;
+    esac
+  done
+}
+
+normalize_version() {
+  local value="${1:-}"
+  value="${value#v}"
+  printf '%s' "${value}"
+}
+
+version_compare() {
+  local left right
+  local -a left_parts=() right_parts=()
+  local max_count=0
+  local index
+  local left_value right_value
+
+  left="$(normalize_version "$1")"
+  right="$(normalize_version "$2")"
+
+  if [[ -z "${left}" && -z "${right}" ]]; then
+    printf '0'
+    return
+  fi
+  if [[ -z "${left}" ]]; then
+    printf -- '-1'
+    return
+  fi
+  if [[ -z "${right}" ]]; then
+    printf '1'
+    return
+  fi
+
+  IFS=. read -r -a left_parts <<<"${left}"
+  IFS=. read -r -a right_parts <<<"${right}"
+
+  if (( ${#left_parts[@]} > ${#right_parts[@]} )); then
+    max_count=${#left_parts[@]}
+  else
+    max_count=${#right_parts[@]}
+  fi
+
+  for (( index = 0; index < max_count; index += 1 )); do
+    left_value="${left_parts[index]:-0}"
+    right_value="${right_parts[index]:-0}"
+    left_value="${left_value//[^0-9]/}"
+    right_value="${right_value//[^0-9]/}"
+    left_value="${left_value:-0}"
+    right_value="${right_value:-0}"
+
+    if (( 10#${left_value} > 10#${right_value} )); then
+      printf '1'
+      return
+    fi
+    if (( 10#${left_value} < 10#${right_value} )); then
+      printf -- '-1'
+      return
+    fi
+  done
+
+  printf '0'
+}
+
+PACKAGE_MANAGER=""
+
+resolve_package_manager() {
+  if [[ -n "${PACKAGE_MANAGER}" ]]; then
+    printf '%s' "${PACKAGE_MANAGER}"
+    return 0
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    PACKAGE_MANAGER="apt-get"
+  elif command -v dnf >/dev/null 2>&1; then
+    PACKAGE_MANAGER="dnf"
+  elif command -v yum >/dev/null 2>&1; then
+    PACKAGE_MANAGER="yum"
+  elif command -v zypper >/dev/null 2>&1; then
+    PACKAGE_MANAGER="zypper"
+  elif command -v pacman >/dev/null 2>&1; then
+    PACKAGE_MANAGER="pacman"
+  elif command -v apk >/dev/null 2>&1; then
+    PACKAGE_MANAGER="apk"
+  elif command -v brew >/dev/null 2>&1; then
+    PACKAGE_MANAGER="brew"
+  else
+    return 1
+  fi
+
+  printf '%s' "${PACKAGE_MANAGER}"
+}
+
+run_with_privilege() {
+  if [[ "$1" == "brew" || "$(id -u)" -eq 0 ]]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    line "This step needs administrator privileges. Please run as root or install sudo first." "这一步需要管理员权限。请以 root 身份运行，或先安装 sudo。"
+    return 1
+  fi
+}
+
+install_packages() {
+  local manager
+  manager="$(resolve_package_manager)" || {
+    line "No supported package manager was found. Please install the dependency manually and run the command again." "未找到受支持的软件包管理器。请先手动安装依赖后再重试。"
+    return 1
+  }
+
+  case "${manager}" in
+    apt-get)
+      run_with_privilege apt-get update
+      run_with_privilege apt-get install -y "$@"
+      ;;
+    dnf)
+      run_with_privilege dnf install -y "$@"
+      ;;
+    yum)
+      run_with_privilege yum install -y "$@"
+      ;;
+    zypper)
+      run_with_privilege zypper --non-interactive install "$@"
+      ;;
+    pacman)
+      run_with_privilege pacman -Sy --noconfirm "$@"
+      ;;
+    apk)
+      run_with_privilege apk add --no-cache "$@"
+      ;;
+    brew)
+      brew install "$@"
+      ;;
+  esac
+}
+
+read_json_string() {
+  local file="$1"
+  local key="$2"
+  sed -nE "s/^[[:space:]]*\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]*)\"[[:space:]]*,?[[:space:]]*$/\1/p" "${file}" | head -n1
+}
+
+read_json_number() {
+  local file="$1"
+  local key="$2"
+  sed -nE "s/^[[:space:]]*\"${key}\"[[:space:]]*:[[:space:]]*([0-9]+)[[:space:]]*,?[[:space:]]*$/\1/p" "${file}" | head -n1
+}
+
+try_fetch_remote_script_version() {
+  local script_name="$1"
+  local content
+
+  if ! command -v curl >/dev/null 2>&1; then
+    return 1
+  fi
+
+  content="$(curl -fsSL "${RAW_BASE_URL}/${script_name}" 2>/dev/null || true)"
+  [[ -n "${content}" ]] || return 1
+  printf '%s\n' "${content}" | sed -nE 's/^SCRIPT_VERSION="([^"]+)".*/\1/p' | head -n1
+}
+
+try_fetch_latest_tag() {
+  local payload
+
+  if ! command -v curl >/dev/null 2>&1; then
+    return 1
+  fi
+
+  payload="$(curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/latest" 2>/dev/null || true)"
+  [[ -n "${payload}" ]] || return 1
+  printf '%s\n' "${payload}" | sed -nE 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/p' | head -n1
+}
+
+resolve_install_dir() {
+  local script_dir
+
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ -f "${GLOBAL_CONFIG}" ]]; then
+    INSTALL_DIR="$(read_json_string "${GLOBAL_CONFIG}" "install_dir")"
+  fi
+
+  if [[ -z "${INSTALL_DIR}" ]]; then
+    INSTALL_DIR="$(cd "${script_dir}/.." && pwd)"
+  fi
+
+  if [[ -f "${GLOBAL_CONFIG}" ]]; then
+    INSTALL_TAG="$(read_json_string "${GLOBAL_CONFIG}" "release_tag")"
+    INSTALLED_SCRIPT_VERSION="$(read_json_string "${GLOBAL_CONFIG}" "script_version")"
+  fi
+
+  INSTALLED_SCRIPT_VERSION="${INSTALLED_SCRIPT_VERSION:-${SCRIPT_VERSION}}"
+}
+
+load_language() {
+  if [[ -f "${GLOBAL_CONFIG}" ]]; then
+    local language
+    language="$(read_json_string "${GLOBAL_CONFIG}" "language")"
+    if [[ "${language}" == zh* ]]; then
+      LANG_CODE="zh-CN"
+    fi
+  fi
+}
+
+write_global_config() {
+  mkdir -p "${GLOBAL_HOME}"
+  cat >"${GLOBAL_CONFIG}" <<EOF
+{
+  "language": "${LANG_CODE}",
+  "install_dir": "${INSTALL_DIR}",
+  "release_tag": "${INSTALL_TAG}",
+  "script_version": "${SCRIPT_VERSION}"
+}
+EOF
+}
+
+ensure_command() {
+  local command_name="$1"
+  shift || true
+  local packages=("$@")
+
+  if command -v "${command_name}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ "${#packages[@]}" -eq 0 ]]; then
+    packages=("${command_name}")
+  fi
+
+  line "Missing required command: ${command_name}" "缺少必需命令：${command_name}"
+  if ! confirm_yes_no "Install the missing dependency now?" "现在安装缺少的依赖？" "Y"; then
+    exit 1
+  fi
+
+  install_packages "${packages[@]}"
+  if ! command -v "${command_name}" >/dev/null 2>&1; then
+    line "The dependency was not installed successfully: ${command_name}" "依赖安装失败：${command_name}"
+    exit 1
+  fi
+}
+
+ensure_checksum_tool() {
+  if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || command -v openssl >/dev/null 2>&1; then
+    return 0
+  fi
+
+  line "A SHA-256 verification tool is required." "需要 SHA-256 校验工具。"
+  if ! confirm_yes_no "Install the checksum dependency now?" "现在安装校验依赖？" "Y"; then
+    exit 1
+  fi
+
+  case "$(uname -s)" in
+    Darwin)
+      install_packages perl
+      ;;
+    *)
+      install_packages coreutils
+      ;;
+  esac
+
+  if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1 && ! command -v openssl >/dev/null 2>&1; then
+    line "No checksum tool is available after installation." "安装后仍然没有可用的校验工具。"
+    exit 1
+  fi
+}
+
+fetch_release_json() {
+  ensure_command curl
+  if [[ -n "${INSTALL_TAG}" ]]; then
+    if LATEST_RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/tags/${INSTALL_TAG}" 2>/dev/null)"; then
+      return
+    fi
+  fi
+
+  LATEST_RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/latest")"
+  INSTALL_TAG="$(printf '%s\n' "${LATEST_RELEASE_JSON}" | sed -nE 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
+}
+
+release_has_asset() {
+  local asset_name="$1"
+  grep -F "\"name\": \"${asset_name}\"" >/dev/null 2>&1 <<<"${LATEST_RELEASE_JSON}"
+}
+
+detect_target() {
+  local os_name
+  local arch_name
+
+  os_name="$(uname -s)"
+  arch_name="$(uname -m)"
+
+  case "${os_name}" in
+    Linux)
+      case "${arch_name}" in
+        x86_64|amd64) printf '%s' "x86_64-unknown-linux-gnu" ;;
+        aarch64|arm64) printf '%s' "aarch64-unknown-linux-gnu" ;;
+        *) return 1 ;;
+      esac
+      ;;
+    Darwin)
+      case "${arch_name}" in
+        arm64|aarch64) printf '%s' "aarch64-apple-darwin" ;;
+        x86_64) printf '%s' "x86_64-apple-darwin" ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+download_with_progress() {
+  local url="$1"
+  local output_path="$2"
+  local label="$3"
+
+  ensure_command curl
+  line "Downloading ${label}" "正在下载 ${label}"
+  curl --fail --location --retry 3 --retry-delay 2 --progress-bar --output "${output_path}" "${url}"
+}
+
+verify_checksum() {
+  local archive_path="$1"
+  local checksum_path="$2"
+
+  ensure_checksum_tool
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$(dirname "${archive_path}")" && sha256sum -c "$(basename "${checksum_path}")")
+  elif command -v shasum >/dev/null 2>&1; then
+    (cd "$(dirname "${archive_path}")" && shasum -a 256 -c "$(basename "${checksum_path}")")
+  elif command -v openssl >/dev/null 2>&1; then
+    local expected actual
+    expected="$(awk '{print $1}' "${checksum_path}")"
+    actual="$(openssl dgst -sha256 -r "${archive_path}" | awk '{print $1}')"
+    [[ "${expected}" == "${actual}" ]]
+  else
+    line "Missing sha256sum/shasum for checksum verification." "缺少 sha256sum 或 shasum，无法校验文件。"
+    exit 1
+  fi
+}
+
+download_service_binary() {
+  local service="$1"
+  local target="$2"
+  local temp_dir="$3"
+  local archive_name="${service}-${INSTALL_TAG}-${target}.tar.gz"
+  local checksum_name="${archive_name}.sha256"
+  local archive_path="${temp_dir}/${archive_name}"
+  local checksum_path="${temp_dir}/${checksum_name}"
+  local base_url="${REPO_URL}/releases/download/${INSTALL_TAG}"
+  local extract_dir="${temp_dir}/extract-${service}"
+  local binary_path
+  local example_path
+
+  ensure_command tar tar
+  if ! release_has_asset "${archive_name}"; then
+    line "The current release does not provide ${archive_name}." "当前 release 不提供 ${archive_name}。"
+    exit 1
+  fi
+
+  download_with_progress "${base_url}/${archive_name}" "${archive_path}" "${archive_name}"
+  download_with_progress "${base_url}/${checksum_name}" "${checksum_path}" "${checksum_name}"
+  verify_checksum "${archive_path}" "${checksum_path}"
+
+  rm -rf "${extract_dir}"
+  mkdir -p "${extract_dir}" "${INSTALL_DIR}/bin" "${INSTALL_DIR}/share/examples"
+  tar -xzf "${archive_path}" -C "${extract_dir}"
+
+  binary_path="$(find "${extract_dir}" -type f -name "${service}" | head -n1 || true)"
+  example_path="$(find "${extract_dir}" -type f -name "${service}.json.example" | head -n1 || true)"
+  [[ -n "${binary_path}" && -n "${example_path}" ]] || {
+    line "The archive layout is missing the expected binary or example config." "压缩包缺少预期的可执行文件或示例配置文件。"
+    exit 1
+  }
+
+  install -m 755 "${binary_path}" "${INSTALL_DIR}/bin/${service}"
+  install -m 644 "${example_path}" "${INSTALL_DIR}/share/examples/${service}.json.example"
+}
+
+ensure_service_binary_installed() {
+  local service="$1"
+  local target
+  local temp_dir
+
+  if [[ -x "${INSTALL_DIR}/bin/${service}" ]]; then
+    return
+  fi
+
+  fetch_release_json
+  target="$(detect_target)" || {
+    line "Unsupported operating system or CPU architecture." "不支持当前操作系统或 CPU 架构。"
+    exit 1
+  }
+  temp_dir="$(mktemp -d)"
+  download_service_binary "${service}" "${target}" "${temp_dir}"
+  rm -rf "${temp_dir}"
+  write_global_config
+}
+
+is_valid_port() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]+$ ]] || return 1
+  (( value >= 1 && value <= 65535 ))
+}
+
+is_valid_instance_name() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$ ]]
+}
+
+list_config_files() {
+  find "${INSTALL_DIR}/config" -maxdepth 1 -type f \( -name "vldb-lancedb-*.json" -o -name "vldb-duckdb-*.json" \) 2>/dev/null | sort
+}
+
+service_display_name() {
+  case "$1" in
+    vldb-lancedb) printf '%s' "LanceDB" ;;
+    vldb-duckdb) printf '%s' "DuckDB" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+instance_config_path() {
+  printf '%s' "${INSTALL_DIR}/config/$1-$2.json"
+}
+
+parse_instance_meta() {
+  local basename="$1"
+
+  case "${basename}" in
+    vldb-lancedb-*)
+      PARSED_SERVICE="vldb-lancedb"
+      PARSED_INSTANCE="${basename#vldb-lancedb-}"
+      ;;
+    vldb-duckdb-*)
+      PARSED_SERVICE="vldb-duckdb"
+      PARSED_INSTANCE="${basename#vldb-duckdb-}"
+      ;;
+    *)
+      PARSED_SERVICE=""
+      PARSED_INSTANCE=""
+      ;;
+  esac
+}
+
+instance_data_path() {
+  local service="$1"
+  local instance="$2"
+
+  if [[ "${service}" == "vldb-lancedb" ]]; then
+    printf '%s' "${INSTALL_DIR}/data/lancedb/${instance}"
+  else
+    printf '%s' "${INSTALL_DIR}/data/duckdb/${instance}/duckdb.db"
+  fi
+}
+
+write_service_config() {
+  local service="$1"
+  local instance="$2"
+  local host="$3"
+  local port="$4"
+  local config_path
+  local data_path
+
+  config_path="$(instance_config_path "${service}" "${instance}")"
+  data_path="$(instance_data_path "${service}" "${instance}")"
+
+  mkdir -p "${INSTALL_DIR}/config"
+  if [[ "${service}" == "vldb-lancedb" ]]; then
+    mkdir -p "${data_path}"
+    cat >"${config_path}" <<EOF
+{
+  "host": "${host}",
+  "port": ${port},
+  "db_path": "${data_path}"
+}
+EOF
+  else
+    mkdir -p "$(dirname "${data_path}")"
+    cat >"${config_path}" <<EOF
+{
+  "host": "${host}",
+  "port": ${port},
+  "db_path": "${data_path}",
+  "memory_limit": "2GB",
+  "threads": 4
+}
+EOF
+  fi
+}
+
+config_host() {
+  read_json_string "$1" "host"
+}
+
+config_port() {
+  read_json_number "$1" "port"
+}
+
+linux_unit_path() {
+  local unit_name="$1-$2.service"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    printf '%s' "/etc/systemd/system/${unit_name}"
+  else
+    printf '%s' "${HOME}/.config/systemd/user/${unit_name}"
+  fi
+}
+
+launchd_plist_path() {
+  local label="com.openvulcan.$1.$2"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    printf '%s' "/Library/LaunchDaemons/${label}.plist"
+  else
+    printf '%s' "${HOME}/Library/LaunchAgents/${label}.plist"
+  fi
+}
+
+runner_path() {
+  printf '%s' "${RUNNER_DIR}/$1-$2.sh"
+}
+
+write_runner_script() {
+  local service="$1"
+  local instance="$2"
+  local runner_file
+  local config_path
+
+  runner_file="$(runner_path "${service}" "${instance}")"
+  config_path="$(instance_config_path "${service}" "${instance}")"
+
+  mkdir -p "${RUNNER_DIR}"
+  cat >"${runner_file}" <<EOF
+#!/usr/bin/env bash
+exec "${INSTALL_DIR}/bin/${service}" --config "${config_path}"
+EOF
+  chmod 755 "${runner_file}"
+}
+
+is_registered() {
+  local service="$1"
+  local instance="$2"
+
+  case "$(uname -s)" in
+    Linux) [[ -f "$(linux_unit_path "${service}" "${instance}")" ]] ;;
+    Darwin) [[ -f "$(launchd_plist_path "${service}" "${instance}")" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+register_instance() {
+  local service="$1"
+  local instance="$2"
+  local runner_file
+
+  write_runner_script "${service}" "${instance}"
+  runner_file="$(runner_path "${service}" "${instance}")"
+
+  case "$(uname -s)" in
+    Linux)
+      local unit_path
+      local unit_name="${service}-${instance}.service"
+      local wanted_by="multi-user.target"
+      local systemctl_cmd=(systemctl)
+
+      unit_path="$(linux_unit_path "${service}" "${instance}")"
+      mkdir -p "$(dirname "${unit_path}")"
+      if [[ "$(id -u)" -ne 0 ]]; then
+        wanted_by="default.target"
+        systemctl_cmd+=(--user)
+        if command -v loginctl >/dev/null 2>&1; then
+          loginctl enable-linger "${USER}" >/dev/null 2>&1 || true
+        fi
+      fi
+
+      cat >"${unit_path}" <<EOF
+[Unit]
+Description=${service} (${instance})
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${runner_file}
+Restart=always
+RestartSec=3
+WorkingDirectory=${INSTALL_DIR}
+
+[Install]
+WantedBy=${wanted_by}
+EOF
+      "${systemctl_cmd[@]}" daemon-reload
+      "${systemctl_cmd[@]}" enable --now "${unit_name}"
+      ;;
+    Darwin)
+      local plist_path
+      local label="com.openvulcan.${service}.${instance}"
+
+      plist_path="$(launchd_plist_path "${service}" "${instance}")"
+      mkdir -p "$(dirname "${plist_path}")"
+      cat >"${plist_path}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>${label}</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>${runner_file}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>WorkingDirectory</key>
+    <string>${INSTALL_DIR}</string>
+  </dict>
+</plist>
+EOF
+      launchctl unload -w "${plist_path}" >/dev/null 2>&1 || true
+      launchctl load -w "${plist_path}"
+      ;;
+    *)
+      line "Service registration is not supported on this platform." "当前平台不支持服务注册。"
+      return 1
+      ;;
+  esac
+}
+
+unregister_instance() {
+  local service="$1"
+  local instance="$2"
+
+  case "$(uname -s)" in
+    Linux)
+      local unit_name="${service}-${instance}.service"
+      local unit_path
+      local systemctl_cmd=(systemctl)
+
+      unit_path="$(linux_unit_path "${service}" "${instance}")"
+      [[ "$(id -u)" -eq 0 ]] || systemctl_cmd+=(--user)
+      "${systemctl_cmd[@]}" disable --now "${unit_name}" >/dev/null 2>&1 || true
+      rm -f "${unit_path}"
+      "${systemctl_cmd[@]}" daemon-reload >/dev/null 2>&1 || true
+      ;;
+    Darwin)
+      local plist_path
+      plist_path="$(launchd_plist_path "${service}" "${instance}")"
+      launchctl unload -w "${plist_path}" >/dev/null 2>&1 || true
+      rm -f "${plist_path}"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  rm -f "$(runner_path "${service}" "${instance}")"
+}
+
+choose_service() {
+  local answer
+
+  line "Select a service: 1) LanceDB  2) DuckDB" "选择服务：1) LanceDB  2) DuckDB"
+  while true; do
+    read -r -p "$(say "Choice [1/2]: " "输入 [1/2]：")" answer
+    case "${answer}" in
+      1) printf '%s' "vldb-lancedb"; return ;;
+      2) printf '%s' "vldb-duckdb"; return ;;
+      *) line "Please input 1 or 2." "请输入 1 或 2。" ;;
+    esac
+  done
+}
+
+choose_instance_file() {
+  local service_filter="${1:-}"
+  local files=()
+  local file
+  local index=1
+  local answer
+
+  while IFS= read -r file; do
+    if [[ -z "${service_filter}" || "${file}" == *"/${service_filter}-"* ]]; then
+      files+=("${file}")
+    fi
+  done < <(list_config_files)
+
+  if [[ "${#files[@]}" -eq 0 ]]; then
+    line "No installed instances were found." "没有找到已安装的实例。"
+    return 1
+  fi
+
+  for file in "${files[@]}"; do
+    local base
+    base="$(basename "${file}" .json)"
+    printf '%s\n' "${index}. ${base}"
+    index=$((index + 1))
+  done
+
+  while true; do
+    read -r -p "$(say "Select instance: " "选择实例：")" answer
+    if [[ "${answer}" =~ ^[0-9]+$ ]] && (( answer >= 1 && answer <= ${#files[@]} )); then
+      printf '%s' "${files[$((answer - 1))]}"
+      return 0
+    fi
+    line "Invalid selection." "选择无效。"
+  done
+}
+
+switch_language() {
+  local answer
+  printf '%s\n' "1. English"
+  printf '%s\n' "2. 简体中文"
+  read -r -p "Select language [1]: " answer
+  case "${answer:-1}" in
+    2) LANG_CODE="zh-CN" ;;
+    *) LANG_CODE="en" ;;
+  esac
+  write_global_config
+}
+
+check_updates() {
+  local remote_script_version=""
+  local latest_tag=""
+  local cmp
+
+  line "Checking for updates..." "正在检查更新……"
+  remote_script_version="$(try_fetch_remote_script_version "vldg" || true)"
+  latest_tag="$(try_fetch_latest_tag || true)"
+
+  line "Current controller script version: ${SCRIPT_VERSION}" "当前管理脚本版本：${SCRIPT_VERSION}"
+  if [[ -n "${remote_script_version}" ]]; then
+    line "Latest controller script version: ${remote_script_version}" "最新管理脚本版本：${remote_script_version}"
+    cmp="$(version_compare "${remote_script_version}" "${SCRIPT_VERSION}")"
+    if [[ "${cmp}" == "1" ]]; then
+      line "Controller script update available." "管理脚本有可用更新。"
+    else
+      line "Controller script is up to date." "管理脚本已是最新。"
+    fi
+  else
+    line "Latest controller script version: unavailable" "无法获取最新管理脚本版本"
+  fi
+
+  if [[ -n "${INSTALL_TAG}" ]]; then
+    line "Installed release tag: ${INSTALL_TAG}" "当前已安装的 release 标签：${INSTALL_TAG}"
+  else
+    line "Installed release tag: not set" "当前尚未记录 release 标签"
+  fi
+
+  if [[ -n "${latest_tag}" ]]; then
+    line "Latest release tag: ${latest_tag}" "最新 release 标签：${latest_tag}"
+    if [[ -z "${INSTALL_TAG}" ]]; then
+      line "No release tag is stored locally yet." "本地尚未记录 release 标签。"
+    else
+      cmp="$(version_compare "${latest_tag}" "${INSTALL_TAG}")"
+      if [[ "${cmp}" == "1" ]]; then
+        line "A newer binary release is available." "发现更新的二进制 release。"
+      else
+        line "Binary release is up to date." "二进制 release 已是最新。"
+      fi
+    fi
+  else
+    line "Latest release tag: unavailable" "无法获取最新 release 标签"
+  fi
+}
+
+configure_instance() {
+  local file
+  local service
+  local instance
+  local host
+  local port
+  local filename
+
+  file="$(choose_instance_file)" || return
+  filename="$(basename "${file}" .json)"
+  parse_instance_meta "${filename}"
+  service="${PARSED_SERVICE}"
+  instance="${PARSED_INSTANCE}"
+  host="$(config_host "${file}")"
+  port="$(config_port "${file}")"
+
+  while true; do
+    host="$(prompt_config_value "Host" "绑定 IP" "${host}")"
+    port="$(prompt_config_value "Port" "端口" "${port}")"
+    is_valid_port "${port}" || {
+      line "Invalid port." "端口不合法。"
+      continue
+    }
+    break
+  done
+
+  write_service_config "${service}" "${instance}" "${host}" "${port}"
+  if is_registered "${service}" "${instance}"; then
+    unregister_instance "${service}" "${instance}"
+    register_instance "${service}" "${instance}"
+  fi
+}
+
+prompt_config_value() {
+  local prompt_en="$1"
+  local prompt_zh="$2"
+  local default_value="$3"
+  local answer
+
+  read -r -p "$(say "${prompt_en} [${default_value}]: " "${prompt_zh} [${default_value}]: ")" answer
+  printf '%s' "${answer:-${default_value}}"
+}
+
+install_single_instance() {
+  local service
+  local instance
+  local host
+  local port
+
+  service="$(choose_service)"
+  ensure_service_binary_installed "${service}"
+  while true; do
+    instance="$(prompt_config_value "Instance name" "实例名称" "default")"
+    is_valid_instance_name "${instance}" || {
+      line "Instance names may contain letters, numbers, dash, and underscore." "实例名只能包含字母、数字、连字符和下划线。"
+      continue
+    }
+    [[ ! -f "$(instance_config_path "${service}" "${instance}")" ]] || {
+      line "This instance already exists." "该实例已存在。"
+      continue
+    }
+    break
+  done
+
+  host="$(prompt_config_value "Bind IP" "绑定 IP" "127.0.0.1")"
+  while true; do
+    if [[ "${service}" == "vldb-lancedb" ]]; then
+      port="$(prompt_config_value "Port" "端口" "50051")"
+    else
+      port="$(prompt_config_value "Port" "端口" "50052")"
+    fi
+    is_valid_port "${port}" && break
+    line "Invalid port." "端口不合法。"
+  done
+
+  write_service_config "${service}" "${instance}" "${host}" "${port}"
+  write_global_config
+  if confirm_yes_no "Register this instance as a service now?" "现在将该实例注册为服务？" "N"; then
+    register_instance "${service}" "${instance}"
+  fi
+}
+
+uninstall_single_instance() {
+  local file
+  local filename
+  local service
+  local instance
+  local data_path
+
+  file="$(choose_instance_file)" || return
+  filename="$(basename "${file}" .json)"
+  parse_instance_meta "${filename}"
+  service="${PARSED_SERVICE}"
+  instance="${PARSED_INSTANCE}"
+  data_path="$(instance_data_path "${service}" "${instance}")"
+
+  if is_registered "${service}" "${instance}"; then
+    unregister_instance "${service}" "${instance}"
+  fi
+
+  rm -f "${file}"
+  if [[ "${service}" == "vldb-lancedb" ]]; then
+    rm -rf "${data_path}"
+  else
+    rm -rf "$(dirname "${data_path}")"
+  fi
+}
+
+toggle_service_registration() {
+  local file
+  local filename
+  local service
+  local instance
+
+  file="$(choose_instance_file)" || return
+  filename="$(basename "${file}" .json)"
+  parse_instance_meta "${filename}"
+  service="${PARSED_SERVICE}"
+  instance="${PARSED_INSTANCE}"
+
+  if is_registered "${service}" "${instance}"; then
+    unregister_instance "${service}" "${instance}"
+  else
+    register_instance "${service}" "${instance}"
+  fi
+}
+
+print_status() {
+  local file
+  local filename
+  local service
+  local instance
+  local host
+  local port
+  local status
+
+  while IFS= read -r file; do
+    filename="$(basename "${file}" .json)"
+    parse_instance_meta "${filename}"
+    service="${PARSED_SERVICE}"
+    instance="${PARSED_INSTANCE}"
+    host="$(config_host "${file}")"
+    port="$(config_port "${file}")"
+    if is_registered "${service}" "${instance}"; then
+      status="$(say "registered" "已注册")"
+    else
+      status="$(say "not registered" "未注册")"
+    fi
+    printf '%s\n' "$(service_display_name "${service}") ${instance} | ${host}:${port} | ${status}"
+  done < <(list_config_files)
+}
+
+remove_profile_exports() {
+  local profile_file
+  local marker_begin="# VulcanLocalDB begin"
+  local marker_end="# VulcanLocalDB end"
+
+  profile_file="${HOME}/.profile"
+  for profile_file in "${HOME}/.profile" "${HOME}/.bash_profile" "${HOME}/.zprofile"; do
+    [[ -f "${profile_file}" ]] || continue
+    if grep -Fq "${marker_begin}" "${profile_file}"; then
+      awk -v begin="${marker_begin}" -v end="${marker_end}" '
+        $0 == begin { skip=1; next }
+        $0 == end { skip=0; next }
+        !skip { print }
+      ' "${profile_file}" >"${profile_file}.tmp"
+      mv "${profile_file}.tmp" "${profile_file}"
+    fi
+  done
+}
+
+uninstall_launcher_only() {
+  remove_profile_exports
+  rm -f "${INSTALL_DIR}/bin/vldg"
+  line "The vldg launcher has been removed from future shell sessions." "vldg 管理脚本已经从后续 shell 会话中移除。"
+}
+
+uninstall_all() {
+  local file
+  local filename
+  local service
+  local instance
+
+  while IFS= read -r file; do
+    filename="$(basename "${file}" .json)"
+    parse_instance_meta "${filename}"
+    service="${PARSED_SERVICE}"
+    instance="${PARSED_INSTANCE}"
+    if is_registered "${service}" "${instance}"; then
+      unregister_instance "${service}" "${instance}"
+    fi
+  done < <(list_config_files)
+
+  remove_profile_exports
+  rm -rf "${INSTALL_DIR}" "${GLOBAL_HOME}"
+  line "VulcanLocalDB has been removed." "VulcanLocalDB 已卸载。"
+  exit 0
+}
+
+show_menu() {
+  printf '\n'
+  printf '%s\n' "===================================="
+  printf '%s\n' "vldg"
+  printf '%s\n' "===================================="
+  printf '%s\n' "$(say "1. Switch language" "1. 切换语言")"
+  printf '%s\n' "$(say "2. Check for updates" "2. 检查更新")"
+  printf '%s\n' "$(say "3. Show installed instances" "3. 查看已安装实例")"
+  printf '%s\n' "$(say "4. Modify host or port" "4. 修改 IP 或端口")"
+  printf '%s\n' "$(say "5. Install a single service instance" "5. 单独安装一个服务实例")"
+  printf '%s\n' "$(say "6. Uninstall a single service instance" "6. 单独卸载一个服务实例")"
+  printf '%s\n' "$(say "7. Register or unregister a service instance" "7. 注册或取消注册一个服务实例")"
+  printf '%s\n' "$(say "8. Remove only the vldg launcher" "8. 仅卸载 vldg 管理脚本")"
+  printf '%s\n' "$(say "9. Uninstall everything" "9. 卸载全部")"
+  printf '%s\n' "$(say "0. Exit" "0. 退出")"
+}
+
+main() {
+  local choice
+
+  resolve_install_dir
+  load_language
+  write_global_config
+
+  while true; do
+    show_menu
+    read -r -p "$(say "Select an action: " "请选择操作：")" choice
+    case "${choice}" in
+      1) switch_language ;;
+      2) check_updates ;;
+      3) print_status ;;
+      4) configure_instance ;;
+      5) install_single_instance ;;
+      6) uninstall_single_instance ;;
+      7) toggle_service_registration ;;
+      8) uninstall_launcher_only ;;
+      9) uninstall_all ;;
+      0) exit 0 ;;
+      *) line "Invalid selection." "选择无效。" ;;
+    esac
+  done
+}
+
+main "$@"

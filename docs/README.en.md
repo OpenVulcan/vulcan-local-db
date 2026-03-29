@@ -11,6 +11,8 @@ This folder contains the detailed usage guides for VulcanLocalDB.
 
 - Native binary install guide: [native-install.en.md](./native-install.en.md)
 - Native binary install guide (Chinese): [native-install.zh-CN.md](./native-install.zh-CN.md)
+- Script installer guide: [script-install.en.md](./script-install.en.md)
+- Script installer guide (Chinese): [script-install.zh-CN.md](./script-install.zh-CN.md)
 - Docker quick install guide: [docker-install.en.md](./docker-install.en.md)
 - Docker quick install guide (Chinese): [docker-install.zh-CN.md](./docker-install.zh-CN.md)
 - Docker build guide for developers: [docker.en.md](./docker.en.md)

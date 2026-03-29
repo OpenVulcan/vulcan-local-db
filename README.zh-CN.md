@@ -85,6 +85,37 @@ docker run -d \
 - 中文：[docs/native-install.zh-CN.md](./docs/native-install.zh-CN.md)
 - English: [docs/native-install.en.md](./docs/native-install.en.md)
 
+### 直接使用 GitHub 安装脚本
+
+如果你希望通过交互式方式完成本地安装，可以直接从 GitHub 源获取安装脚本。
+
+Linux：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh -o /tmp/vulcanlocaldb-install.sh
+bash /tmp/vulcanlocaldb-install.sh
+```
+
+macOS：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh -o /tmp/vulcanlocaldb-install.sh
+bash /tmp/vulcanlocaldb-install.sh
+```
+
+Windows PowerShell：
+
+```powershell
+$installer = Join-Path $env:TEMP "VulcanLocalDB-install.ps1"
+Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.ps1 -OutFile $installer
+powershell -NoProfile -ExecutionPolicy Bypass -File $installer
+```
+
+详细脚本安装说明：
+
+- 中文：[docs/script-install.zh-CN.md](./docs/script-install.zh-CN.md)
+- English: [docs/script-install.en.md](./docs/script-install.en.md)
+
 ## 开发者使用
 
 ### 本地源码构建
@@ -123,6 +154,9 @@ cargo build
 - 二进制安装说明：
   - 中文：[docs/native-install.zh-CN.md](./docs/native-install.zh-CN.md)
   - English: [docs/native-install.en.md](./docs/native-install.en.md)
+- 脚本安装说明：
+  - 中文：[docs/script-install.zh-CN.md](./docs/script-install.zh-CN.md)
+  - English: [docs/script-install.en.md](./docs/script-install.en.md)
 - Docker 快速安装说明：
   - 中文：[docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)
   - English: [docs/docker-install.en.md](./docs/docker-install.en.md)
