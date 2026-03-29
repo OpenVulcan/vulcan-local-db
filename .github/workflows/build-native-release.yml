@@ -47,12 +47,13 @@ jobs:
           # --- LanceDB ---
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: ${{ inputs.lancedb_linux_runner || 'ubuntu-24.04' }}
+            # 【修复 1】：Tag 触发时，无 input 则强行派发给 9950x，防止云端 OOM 崩溃
+            runner: ${{ inputs.lancedb_linux_runner || '9950x' }}
             runner_mode: dynamic
             target: x86_64-unknown-linux-gnu
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: ${{ inputs.lancedb_linux_runner || 'ubuntu-24.04' }} 
+            runner: ${{ inputs.lancedb_linux_runner || '9950x' }} 
             runner_mode: dynamic 
             target: aarch64-unknown-linux-gnu
           - service: vldb-lancedb
@@ -69,12 +70,13 @@ jobs:
           # --- DuckDB ---
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: ${{ inputs.duckdb_linux_runner || 'ubuntu-24.04' }}
+            # 【修复 1】：Tag 触发时，无 input 则强行派发给 proart
+            runner: ${{ inputs.duckdb_linux_runner || 'proart' }}
             runner_mode: dynamic
             target: x86_64-unknown-linux-gnu
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: ${{ inputs.duckdb_linux_runner || 'ubuntu-24.04' }} 
+            runner: ${{ inputs.duckdb_linux_runner || 'proart' }} 
             runner_mode: dynamic 
             target: aarch64-unknown-linux-gnu
           - service: vldb-duckdb
@@ -155,7 +157,8 @@ jobs:
           rustup target add "$TARGET"
 
       - name: Cache Rust build outputs on Windows
-        if: runner.os == 'Windows'
+        # 【修复 2】：追加 && matrix.runner_mode == 'fixed'，仅限云端使用缓存，防止本地 tar 冲突
+        if: runner.os == 'Windows' && matrix.runner_mode == 'fixed'
         uses: actions/cache@v4
         with:
           path: |
@@ -168,7 +171,8 @@ jobs:
             native-release-${{ runner.os }}-${{ matrix.service }}-
 
       - name: Cache Rust build outputs on Unix
-        if: runner.os != 'Windows'
+        # 【修复 2】：追加 && matrix.runner_mode == 'fixed'，彻底放过本地 Linux 战神
+        if: runner.os != 'Windows' && matrix.runner_mode == 'fixed'
         uses: actions/cache@v4
         with:
           path: |
