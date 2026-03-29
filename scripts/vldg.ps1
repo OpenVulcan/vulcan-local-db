@@ -320,7 +320,7 @@ function Get-DataPath {
 }
 
 function Write-ServiceConfig {
-    param([string]$Service, [string]$Instance, [string]$Host, [int]$Port)
+    param([string]$Service, [string]$Instance, [string]$BindHost, [int]$Port)
 
     $configDir = Join-Path $script:InstallDir "config"
     New-Item -ItemType Directory -Force -Path $configDir | Out-Null
@@ -329,7 +329,7 @@ function Write-ServiceConfig {
         $dataPath = Get-DataPath $Service $Instance
         New-Item -ItemType Directory -Force -Path $dataPath | Out-Null
         @{
-            host = $Host
+            host = $BindHost
             port = $Port
             db_path = $dataPath
         } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Get-InstanceConfigPath $Service $Instance)
@@ -337,7 +337,7 @@ function Write-ServiceConfig {
         $dataDir = Split-Path -Parent (Get-DataPath $Service $Instance)
         New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
         @{
-            host = $Host
+            host = $BindHost
             port = $Port
             db_path = (Get-DataPath $Service $Instance)
             memory_limit = "2GB"
@@ -513,8 +513,8 @@ function Configure-Instance {
     $meta = Get-InstanceMeta $file
     $cfg = Get-Content $file.FullName -Raw | ConvertFrom-Json
 
-    $host = Read-Host ("Bind IP [{0}]" -f $cfg.host)
-    if ([string]::IsNullOrWhiteSpace($host)) { $host = $cfg.host }
+    $bindHost = Read-Host ("Bind IP [{0}]" -f $cfg.host)
+    if ([string]::IsNullOrWhiteSpace($bindHost)) { $bindHost = $cfg.host }
 
     while ($true) {
         $portInput = Read-Host ("Port [{0}]" -f $cfg.port)
@@ -526,7 +526,7 @@ function Configure-Instance {
         Write-Info "Invalid port."
     }
 
-    Write-ServiceConfig -Service $meta.service -Instance $meta.instance -Host $host -Port $port
+    Write-ServiceConfig -Service $meta.service -Instance $meta.instance -BindHost $bindHost -Port $port
     Write-Config
     if (Test-Registered $meta.service $meta.instance) {
         Register-Instance -Service $meta.service -Instance $meta.instance
@@ -549,8 +549,8 @@ function Install-SingleInstance {
         }
     }
 
-    $host = Read-Host "Bind IP [127.0.0.1]"
-    if ([string]::IsNullOrWhiteSpace($host)) { $host = "127.0.0.1" }
+    $bindHost = Read-Host "Bind IP [127.0.0.1]"
+    if ([string]::IsNullOrWhiteSpace($bindHost)) { $bindHost = "127.0.0.1" }
 
     while ($true) {
         $defaultPort = if ($service -eq "vldb-lancedb") { 50051 } else { 50052 }
@@ -563,7 +563,7 @@ function Install-SingleInstance {
         Write-Info "Invalid port."
     }
 
-    Write-ServiceConfig -Service $service -Instance $instance -Host $host -Port $port
+    Write-ServiceConfig -Service $service -Instance $instance -BindHost $bindHost -Port $port
     Write-Config
     if (Confirm-Choice "Register this instance as a service now?" "N") {
         Register-Instance -Service $service -Instance $instance

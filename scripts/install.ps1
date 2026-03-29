@@ -330,26 +330,26 @@ function Extract-Binary {
 }
 
 function Write-LanceDbConfig {
-    param([string]$Instance, [string]$Host, [int]$Port)
+    param([string]$Instance, [string]$BindHost, [int]$Port)
     $configDir = Join-Path $script:InstallDir "config"
     $dataDir = Join-Path $script:InstallDir "data\lancedb\$Instance"
     New-Item -ItemType Directory -Force -Path $configDir, $dataDir | Out-Null
 
     @{
-        host = $Host
+        host = $BindHost
         port = $Port
         db_path = $dataDir
     } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $configDir "vldb-lancedb-$Instance.json")
 }
 
 function Write-DuckDbConfig {
-    param([string]$Instance, [string]$Host, [int]$Port)
+    param([string]$Instance, [string]$BindHost, [int]$Port)
     $configDir = Join-Path $script:InstallDir "config"
     $dataDir = Join-Path $script:InstallDir "data\duckdb\$Instance"
     New-Item -ItemType Directory -Force -Path $configDir, $dataDir | Out-Null
 
     @{
-        host = $Host
+        host = $BindHost
         port = $Port
         db_path = (Join-Path $dataDir "duckdb.db")
         memory_limit = "2GB"
@@ -585,8 +585,8 @@ function Main {
             Extract-Binary -ArchivePath $lancedbArchive -Service "vldb-lancedb" -TempDir $tempDir
             Extract-Binary -ArchivePath $duckdbArchive -Service "vldb-duckdb" -TempDir $tempDir
 
-            Write-LanceDbConfig -Instance "default" -Host $HostBind -Port $LanceDbPort
-            Write-DuckDbConfig -Instance "default" -Host $HostBind -Port $DuckDbPort
+            Write-LanceDbConfig -Instance "default" -BindHost $HostBind -Port $LanceDbPort
+            Write-DuckDbConfig -Instance "default" -BindHost $HostBind -Port $DuckDbPort
         }
 
         Install-ManagerScripts
