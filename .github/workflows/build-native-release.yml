@@ -35,7 +35,6 @@ concurrency:
 jobs:
   build:
     name: ${{ matrix.service }} • ${{ matrix.target }}
-    # 【修复 1】：强制将所有结果统一化为 JSON Array，完美避开静态解析器的类型冲突！
     runs-on: ${{ fromJSON( matrix.runner_mode == 'dynamic' && matrix.runner != 'ubuntu-24.04' && format('["self-hosted", "{0}"]', matrix.runner) || format('["{0}"]', matrix.runner) ) }}
     strategy:
       fail-fast: false
@@ -53,7 +52,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: macos-13    # 【修复 2】：纠正为有效的 Intel 节点
+            runner: macos-13
             runner_mode: fixed
             target: x86_64-apple-darwin
           - service: vldb-lancedb
@@ -78,7 +77,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: macos-13    # 【修复 2】：纠正为有效的 Intel 节点
+            runner: macos-13
             runner_mode: fixed
             target: x86_64-apple-darwin
           - service: vldb-duckdb
@@ -108,7 +107,7 @@ jobs:
 
           if [ "$missing" -eq 1 ] || ! dpkg -s libssl-dev >/dev/null 2>&1; then
             sudo apt-get update
-            sudo apt-get install -y pkg-config cmake clang libssl-dev protobuf-compiler
+            sudo apt-get install -y pkg-config cmake clang libssl-dev protobuf-compiler zip
           fi
 
       - name: Install macOS build dependencies
@@ -271,6 +270,8 @@ jobs:
 
           service_dir="$GITHUB_WORKSPACE/$SERVICE"
           cargo_toml="$service_dir/Cargo.toml"
+          
+          # 提取版本号
           version="$(sed -nE 's/^version\s*=\s*"([^"]+)"/\1/p' "$cargo_toml" | head -n1)"
           if [[ -z "$version" ]]; then
             version="unknown"
@@ -315,41 +316,21 @@ jobs:
 
           rm -f "$archive_path" "$checksum_path"
 
+          # 【完美替代方案】：纯 Bash 打包，规避一切 YAML 缩进错误
           if [[ "$archive_ext" == ".zip" ]]; then
-            python3 - "$stage_dir" "$archive_path" <<'PY'
-import os
-import sys
-import zipfile
-
-stage_dir, archive_path = sys.argv[1], sys.argv[2]
-base_dir = os.path.dirname(stage_dir)
-
-with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-    for root, _, files in os.walk(stage_dir):
-        for filename in files:
-            full_path = os.path.join(root, filename)
-            rel_path = os.path.relpath(full_path, base_dir)
-            zf.write(full_path, rel_path)
-PY
+            (cd "$dist_dir" && zip -r -q "$(basename "$archive_path")" "$package_name")
           else
-            # 【修复 3】：纠正变量名称拼写，确保能够正确找到路径
             tar -czf "$archive_path" -C "$dist_dir" "$package_name"
           fi
 
-          python3 - "$archive_path" "$checksum_path" <<'PY'
-import hashlib
-import os
-import sys
-
-archive_path, checksum_path = sys.argv[1], sys.argv[2]
-hasher = hashlib.sha256()
-with open(archive_path, "rb") as f:
-    for chunk in iter(lambda: f.read(1024 * 1024), b""):
-        hasher.update(chunk)
-
-with open(checksum_path, "w", encoding="ascii", newline="") as f:
-    f.write(f"{hasher.hexdigest()}  {os.path.basename(archive_path)}")
-PY
+          # 跨平台 (Linux/macOS) 的 SHA256 校验和生成
+          cd "$dist_dir"
+          filename="$(basename "$archive_path")"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$filename" > "$checksum_path"
+          else
+            shasum -a 256 "$filename" > "$checksum_path"
+          fi
 
       - name: Upload packaged binary
         uses: actions/upload-artifact@v4
@@ -361,3 +342,23 @@ PY
             dist/*.sha256
           if-no-files-found: error
           retention-days: 14
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download packaged binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
