@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.0"
+$ScriptVersion = "0.1.1"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -380,12 +380,17 @@ function Write-GlobalConfig {
 }
 
 function Install-ManagerScripts {
-    $sourceDir = Split-Path -Parent $PSCommandPath
+    $sourcePath = $PSCommandPath
+    $sourceDir = $null
     $binDir = Join-Path $script:InstallDir "bin"
     $managerScript = Join-Path $binDir "vldg.ps1"
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
-    if (Test-Path (Join-Path $sourceDir "vldg.ps1")) {
+    if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
+        $sourceDir = Split-Path -Parent $sourcePath
+    }
+
+    if ($sourceDir -and (Test-Path (Join-Path $sourceDir "vldg.ps1")) -and (Test-Path (Join-Path $sourceDir "vldg.cmd"))) {
         Copy-Item (Join-Path $sourceDir "vldg.ps1") $managerScript -Force
         Copy-Item (Join-Path $sourceDir "vldg.cmd") (Join-Path $binDir "vldg.cmd") -Force
     } else {

@@ -32,24 +32,22 @@ Notes:
 ### Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh -o /tmp/vulcanlocaldb-install.sh
-bash /tmp/vulcanlocaldb-install.sh
+curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh | bash
 ```
 
 ### macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh -o /tmp/vulcanlocaldb-install.sh
-bash /tmp/vulcanlocaldb-install.sh
+curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh | bash
 ```
 
 ### Windows PowerShell
 
 ```powershell
-$installer = Join-Path $env:TEMP "VulcanLocalDB-install.ps1"
-Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.ps1 -OutFile $installer
-powershell -NoProfile -ExecutionPolicy Bypass -File $installer
+irm https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.ps1 | iex
 ```
+
+If your network path or proxy serves a stale cached copy of the `main` branch script, replace `main` in the URL with a known commit SHA from the repository.
 
 ## What The Installer Does
 

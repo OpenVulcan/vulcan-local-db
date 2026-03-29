@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.0"
+$ScriptVersion = "0.1.1"
 $GlobalHome = Join-Path $HOME ".vulcan\vldg"
 $GlobalConfig = Join-Path $GlobalHome "config.json"
 $RunDir = Join-Path $GlobalHome "run"
