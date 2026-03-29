@@ -32,6 +32,10 @@ concurrency:
   group: native-release-${{ github.workflow }}-${{ github.ref_name || github.run_id }}
   cancel-in-progress: false
 
+# 【融合点 1】：全局强制使用 Node.js 24，彻底消灭那 7 个弃用警告
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: ${{ matrix.service }} • ${{ matrix.target }}
@@ -48,14 +52,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: ${{ inputs.lancedb_linux_runner || 'ubuntu-24.04' }} # 【修改】拉回本地动态调度
-            runner_mode: dynamic # 【修改】开启排队
+            runner: ${{ inputs.lancedb_linux_runner || 'ubuntu-24.04' }} 
+            runner_mode: dynamic 
             target: aarch64-unknown-linux-gnu
-          - service: vldb-lancedb
-            binary: vldb-lancedb
-            runner: macos-15
-            runner_mode: fixed
-            target: x86_64-apple-darwin
+          # 【融合点 2】：果断裁切 LanceDB 的 x86_64-apple-darwin，放弃老旧 Intel Mac 支持，解决 AVX-512 编译死锁
           - service: vldb-lancedb
             binary: vldb-lancedb
             runner: macos-15
@@ -75,8 +75,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: ${{ inputs.duckdb_linux_runner || 'ubuntu-24.04' }} # 【修改】拉回本地动态调度
-            runner_mode: dynamic # 【修改】开启排队
+            runner: ${{ inputs.duckdb_linux_runner || 'ubuntu-24.04' }} 
+            runner_mode: dynamic 
             target: aarch64-unknown-linux-gnu
           - service: vldb-duckdb
             binary: vldb-duckdb
@@ -102,7 +102,6 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           missing=0
-          # 【修改】追加了 ARM 交叉编译的 C/C++ 工具链
           for pkg in pkg-config cmake clang protoc aarch64-linux-gnu-gcc aarch64-linux-gnu-g++; do
             if ! command -v "$pkg" >/dev/null 2>&1; then
               missing=1
@@ -111,23 +110,19 @@ jobs:
 
           if [ "$missing" -eq 1 ] || ! dpkg -s libssl-dev >/dev/null 2>&1; then
             sudo apt-get update
-            # 【修改】安装原生编译底座
             sudo apt-get install -y pkg-config cmake clang libssl-dev protobuf-compiler zip gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           fi
 
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
         run: |
-          missing=0
-          for tool in cmake protoc; do
-            if ! command -v "$tool" >/dev/null 2>&1; then
-              missing=1
-            fi
-          done
-
-          if [ "$missing" -eq 1 ]; then
-            brew update
-            brew install cmake protobuf
+          # 【融合点 3】：精细化控制，消灭 CMake 重复安装警告
+          brew update
+          if ! command -v cmake >/dev/null 2>&1; then
+            brew install cmake
+          fi
+          if ! command -v protoc >/dev/null 2>&1; then
+            brew install protobuf
           fi
 
       - name: Install Windows build dependencies
@@ -196,12 +191,10 @@ jobs:
         working-directory: ${{ matrix.service }}
         env:
           CARGO_TERM_COLOR: always
-          # 【修改】：注入 macOS 交叉编译环境变量 (解决 ld symbol not found)
           MACOSX_DEPLOYMENT_TARGET: "12.0"
           CMAKE_OSX_ARCHITECTURES: ${{ matrix.target == 'x86_64-apple-darwin' && 'x86_64' || (matrix.target == 'aarch64-apple-darwin' && 'arm64' || '') }}
           CFLAGS_x86_64_apple_darwin: "-target x86_64-apple-macos12"
           CXXFLAGS_x86_64_apple_darwin: "-target x86_64-apple-macos12"
-          # 【修改】：注入 Linux ARM 交叉编译环境变量 (让本地机器可以打出 ARM 包)
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: "aarch64-linux-gnu-gcc"
           CC_aarch64_unknown_linux_gnu: "aarch64-linux-gnu-gcc"
           CXX_aarch64_unknown_linux_gnu: "aarch64-linux-gnu-g++"
