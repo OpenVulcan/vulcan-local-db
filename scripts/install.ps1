@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.1"
+$ScriptVersion = "0.1.2"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -27,6 +27,11 @@ try {
 function Write-Info {
     param([string]$Message)
     Write-Host $Message
+}
+
+function Write-Step {
+    param([string]$Message)
+    Write-Host ("[Step] " + $Message)
 }
 
 function Show-Banner {
@@ -92,10 +97,13 @@ function Get-IsAdmin {
 }
 
 function Get-DefaultInstallDir {
-    if (Get-IsAdmin) {
-        return (Join-Path $env:ProgramFiles "VulcanLocalDB")
+    if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
+        return (Join-Path $env:APPDATA "VulcanLocalDB")
     }
-    return (Join-Path $env:LOCALAPPDATA "Programs\VulcanLocalDB")
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        return (Join-Path $env:LOCALAPPDATA "VulcanLocalDB")
+    }
+    return (Join-Path $HOME "AppData\Roaming\VulcanLocalDB")
 }
 
 function Test-ValidInstallDir {
@@ -242,6 +250,7 @@ function Show-UpdateNotice {
 }
 
 function Get-LatestRelease {
+    Write-Step "Resolving the latest release information"
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/releases/latest"
     if (-not $release.tag_name) {
         throw "Unable to resolve the latest release tag."
@@ -259,6 +268,12 @@ function Download-FileWithProgress {
 
     Write-Info "Downloading $Label"
     Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $OutFile
+    $sizeText = ""
+    if (Test-Path $OutFile) {
+        $fileInfo = Get-Item $OutFile
+        $sizeText = " ({0:N2} MB)" -f ($fileInfo.Length / 1MB)
+    }
+    Write-Info "Finished downloading $Label$sizeText"
 }
 
 function Get-TargetTriple {
@@ -292,6 +307,7 @@ function Download-AssetPair {
     Download-FileWithProgress -Url "$baseUrl/$archiveName" -OutFile $archivePath -Label $archiveName
     Download-FileWithProgress -Url "$baseUrl/$checksumName" -OutFile $checksumPath -Label $checksumName
 
+    Write-Step "Verifying checksum for $archiveName"
     $expected = (Get-Content $checksumPath -Raw).Split(" ")[0].Trim().ToLowerInvariant()
     $actual = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
     if ($expected -ne $actual) {
@@ -309,6 +325,7 @@ function Extract-Binary {
     )
 
     $extractDir = Join-Path $TempDir "extract-$Service"
+    Write-Step "Extracting $Service package"
     if (Test-Path $extractDir) {
         Remove-Item -Recurse -Force $extractDir
     }
@@ -322,6 +339,7 @@ function Extract-Binary {
         throw "The archive layout is missing the expected binary or example config."
     }
 
+    Write-Step "Installing $Service binary and example config"
     New-Item -ItemType Directory -Force -Path (Join-Path $script:InstallDir "bin") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $script:InstallDir "share\examples") | Out-Null
 
@@ -331,6 +349,7 @@ function Extract-Binary {
 
 function Write-LanceDbConfig {
     param([string]$Instance, [string]$BindHost, [int]$Port)
+    Write-Step "Writing LanceDB config for instance '$Instance'"
     $configDir = Join-Path $script:InstallDir "config"
     $dataDir = Join-Path $script:InstallDir "data\lancedb\$Instance"
     New-Item -ItemType Directory -Force -Path $configDir, $dataDir | Out-Null
@@ -344,6 +363,7 @@ function Write-LanceDbConfig {
 
 function Write-DuckDbConfig {
     param([string]$Instance, [string]$BindHost, [int]$Port)
+    Write-Step "Writing DuckDB config for instance '$Instance'"
     $configDir = Join-Path $script:InstallDir "config"
     $dataDir = Join-Path $script:InstallDir "data\duckdb\$Instance"
     New-Item -ItemType Directory -Force -Path $configDir, $dataDir | Out-Null
@@ -370,6 +390,7 @@ function Get-ScriptVersionFromFile {
 }
 
 function Write-GlobalConfig {
+    Write-Step "Writing global installer config"
     New-Item -ItemType Directory -Force -Path $script:GlobalHome | Out-Null
     @{
         language = "en"
@@ -384,6 +405,7 @@ function Install-ManagerScripts {
     $sourceDir = $null
     $binDir = Join-Path $script:InstallDir "bin"
     $managerScript = Join-Path $binDir "vldg.ps1"
+    Write-Step "Installing controller scripts"
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
     if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
@@ -391,9 +413,11 @@ function Install-ManagerScripts {
     }
 
     if ($sourceDir -and (Test-Path (Join-Path $sourceDir "vldg.ps1")) -and (Test-Path (Join-Path $sourceDir "vldg.cmd"))) {
+        Write-Step "Copying bundled controller scripts"
         Copy-Item (Join-Path $sourceDir "vldg.ps1") $managerScript -Force
         Copy-Item (Join-Path $sourceDir "vldg.cmd") (Join-Path $binDir "vldg.cmd") -Force
     } else {
+        Write-Step "Downloading controller scripts from GitHub"
         Download-FileWithProgress -Url "$RawBaseUrl/vldg.ps1" -OutFile $managerScript -Label "vldg.ps1"
         Download-FileWithProgress -Url "$RawBaseUrl/vldg.cmd" -OutFile (Join-Path $binDir "vldg.cmd") -Label "vldg.cmd"
     }
@@ -402,10 +426,12 @@ function Install-ManagerScripts {
     if ($detectedVersion) {
         $script:ControllerScriptVersion = $detectedVersion
     }
+    Write-Info "Controller script version: $($script:ControllerScriptVersion)"
 }
 
 function Ensure-PathExports {
     $binDir = Join-Path $script:InstallDir "bin"
+    Write-Step "Updating user PATH and environment variables"
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $parts = @()
     if ($currentPath) {
@@ -469,6 +495,7 @@ function Ensure-ServiceBuilderInstalled {
     $downloadPath = Join-Path $tempDir "WinSW-x64.exe"
 
     try {
+        Write-Step "Downloading WinSW service wrapper"
         New-Item -ItemType Directory -Force -Path $tempDir, (Split-Path -Parent $templatePath) | Out-Null
         Download-FileWithProgress -Url "https://github.com/winsw/winsw/releases/download/$WinSWVersion/WinSW-x64.exe" -OutFile $downloadPath -Label "WinSW-x64.exe"
         Copy-Item $downloadPath $templatePath -Force
@@ -489,6 +516,7 @@ function Remove-LegacyStartupTask {
 function Write-ServiceWrapperConfig {
     param([string]$Service, [string]$Instance)
 
+    Write-Step "Preparing Windows service wrapper for $Service ($Instance)"
     $serviceName = Get-ServiceName -Service $Service -Instance $Instance
     $wrapperDir = Get-ServiceWrapperDir -Service $Service -Instance $Instance
     $wrapperExe = Get-ServiceWrapperExePath -Service $Service -Instance $Instance
@@ -531,6 +559,7 @@ function Write-ServiceWrapperConfig {
 function Register-WindowsService {
     param([string]$Service, [string]$Instance)
 
+    Write-Step "Registering Windows service for $Service ($Instance)"
     $wrapperExe = Write-ServiceWrapperConfig -Service $Service -Instance $Instance
     Remove-LegacyStartupTask -Service $Service -Instance $Instance
 
@@ -541,6 +570,7 @@ function Register-WindowsService {
         throw "Failed to install the Windows service."
     }
 
+    Write-Step "Starting Windows service for $Service ($Instance)"
     & $wrapperExe start
     if ($LASTEXITCODE -ne 0) {
         throw "The Windows service was installed, but it failed to start."
@@ -563,6 +593,7 @@ function Unregister-WindowsService {
 
 function Main {
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("vulcanlocaldb-" + [guid]::NewGuid().ToString("N"))
+    Write-Step "Creating temporary workspace at $tempDir"
     New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
     try {
@@ -594,6 +625,7 @@ function Main {
         Ensure-PathExports
 
         if ($script:InstallMode -eq "full" -and (Confirm-Choice "Register both services for auto start and auto restart?" "N")) {
+            Write-Step "Preparing service registration"
             Register-WindowsService -Service "vldb-lancedb" -Instance "default"
             Register-WindowsService -Service "vldb-duckdb" -Instance "default"
         }
@@ -605,6 +637,7 @@ function Main {
         }
         Write-Info "Launcher: $InstallDir\bin\vldg.cmd"
     } finally {
+        Write-Step "Cleaning temporary workspace"
         Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
     }
 }

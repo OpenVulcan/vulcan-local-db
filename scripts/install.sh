@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.1"
+SCRIPT_VERSION="0.1.2"
 REPO_SLUG="OpenVulcan/vulcan-local-db"
 REPO_URL="https://github.com/OpenVulcan/vulcan-local-db"
 RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts"
@@ -28,6 +28,10 @@ say() {
 
 line() {
   printf '%s\n' "$(say "$1" "$2")"
+}
+
+step() {
+  line "[Step] $1" "[步骤] $2"
 }
 
 prompt_default() {
@@ -453,6 +457,7 @@ choose_network_settings() {
 }
 
 fetch_latest_tag() {
+  step "Resolving the latest release information" "正在解析最新 release 信息"
   ensure_command curl
   LATEST_RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/latest")"
   INSTALL_TAG="$(printf '%s\n' "${LATEST_RELEASE_JSON}" | sed -nE 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
@@ -471,6 +476,17 @@ download_with_progress() {
   ensure_command curl
   line "Downloading ${label}" "正在下载 ${label}"
   curl --fail --location --retry 3 --retry-delay 2 --progress-bar --output "${output_path}" "${url}"
+  if [[ -f "${output_path}" ]]; then
+    local size_bytes
+    local size_mb
+    size_bytes="$(wc -c < "${output_path}" 2>/dev/null | tr -d '[:space:]')"
+    size_mb="$(awk -v bytes="${size_bytes:-0}" 'BEGIN { printf "%.2f", bytes / (1024 * 1024) }')"
+    if [[ -n "${size_mb}" ]]; then
+      line "Finished downloading ${label} (${size_mb} MB)" "已完成下载 ${label}（${size_mb} MB）"
+    else
+      line "Finished downloading ${label}" "已完成下载 ${label}"
+    fi
+  fi
 }
 
 release_has_asset() {
@@ -510,6 +526,7 @@ verify_checksum() {
   local archive_path="$1"
   local checksum_path="$2"
 
+  step "Verifying checksum for $(basename "${archive_path}")" "正在校验 $(basename "${archive_path}")"
   ensure_checksum_tool
   if command -v sha256sum >/dev/null 2>&1; then
     (cd "$(dirname "${archive_path}")" && sha256sum -c "$(basename "${checksum_path}")")
@@ -557,6 +574,7 @@ extract_binary() {
   local binary_path
   local example_path
 
+  step "Extracting ${service} package" "正在解压 ${service} 安装包"
   rm -rf "${extract_dir}"
   mkdir -p "${extract_dir}"
   tar -xzf "${archive_path}" -C "${extract_dir}"
@@ -569,6 +587,7 @@ extract_binary() {
     exit 1
   fi
 
+  step "Installing ${service} binary and example config" "正在安装 ${service} 可执行文件和示例配置"
   mkdir -p "${INSTALL_DIR}/bin" "${INSTALL_DIR}/share/examples"
   install -m 755 "${binary_path}" "${INSTALL_DIR}/bin/${service}"
   install -m 644 "${example_path}" "${INSTALL_DIR}/share/examples/${service}.json.example"
@@ -581,6 +600,7 @@ write_lancedb_config() {
   local config_path="${INSTALL_DIR}/config/vldb-lancedb-${instance}.json"
   local data_path="${INSTALL_DIR}/data/lancedb/${instance}"
 
+  step "Writing LanceDB config for instance '${instance}'" "正在为实例 '${instance}' 写入 LanceDB 配置"
   mkdir -p "${INSTALL_DIR}/config" "${data_path}"
   cat >"${config_path}" <<EOF
 {
@@ -598,6 +618,7 @@ write_duckdb_config() {
   local config_path="${INSTALL_DIR}/config/vldb-duckdb-${instance}.json"
   local data_dir="${INSTALL_DIR}/data/duckdb/${instance}"
 
+  step "Writing DuckDB config for instance '${instance}'" "正在为实例 '${instance}' 写入 DuckDB 配置"
   mkdir -p "${INSTALL_DIR}/config" "${data_dir}"
   cat >"${config_path}" <<EOF
 {
@@ -611,6 +632,7 @@ EOF
 }
 
 write_global_config() {
+  step "Writing global installer config" "正在写入全局安装配置"
   mkdir -p "${GLOBAL_HOME}"
   cat >"${GLOBAL_CONFIG}" <<EOF
 {
@@ -627,6 +649,7 @@ install_manager_script() {
   local raw_base
   local installed_script_path
 
+  step "Installing controller script" "正在安装管理脚本"
   source_dir="$(cd "$(dirname "$0")" && pwd)"
   installed_script_path="${INSTALL_DIR}/bin/vldg"
   mkdir -p "${INSTALL_DIR}/bin"
@@ -648,6 +671,7 @@ ensure_profile_exports() {
   local marker_begin="# VulcanLocalDB begin"
   local marker_end="# VulcanLocalDB end"
 
+  step "Updating shell profile and PATH" "正在更新 shell 配置和 PATH"
   profile_file="$(detect_profile_file)"
   mkdir -p "$(dirname "${profile_file}")"
   touch "${profile_file}"
@@ -668,6 +692,7 @@ write_runner_script() {
   local config_path="${INSTALL_DIR}/config/${service}-${instance}.json"
   local runner_path="${RUNNER_DIR}/${service}-${instance}.sh"
 
+  step "Writing service runner for ${service} (${instance})" "正在为 ${service}（${instance}）生成服务启动脚本"
   mkdir -p "${RUNNER_DIR}"
   cat >"${runner_path}" <<EOF
 #!/usr/bin/env bash
@@ -697,6 +722,7 @@ register_linux_service() {
   local wanted_by="multi-user.target"
   local systemctl_cmd=(systemctl)
 
+  step "Registering systemd service for ${service} (${instance})" "正在为 ${service}（${instance}）注册 systemd 服务"
   write_runner_script "${service}" "${instance}"
   unit_path="$(linux_unit_path "${service}" "${instance}")"
   mkdir -p "$(dirname "${unit_path}")"
@@ -763,6 +789,7 @@ register_macos_service() {
   local plist_path
   local runner_path="${RUNNER_DIR}/${service}-${instance}.sh"
 
+  step "Registering launchd service for ${service} (${instance})" "正在为 ${service}（${instance}）注册 launchd 服务"
   write_runner_script "${service}" "${instance}"
   plist_path="$(launchd_plist_path "${service}" "${instance}")"
   mkdir -p "$(dirname "${plist_path}")"
@@ -842,6 +869,7 @@ main() {
     }
 
     line "Resolved release tag: ${INSTALL_TAG}" "解析到的 release 标签：${INSTALL_TAG}"
+    step "Creating temporary workspace" "正在创建临时工作目录"
     temp_dir="$(mktemp -d)"
     trap 'rm -rf "${temp_dir}"' EXIT
 
@@ -860,6 +888,7 @@ main() {
   ensure_profile_exports
 
   if [[ "${INSTALL_MODE}" == "full" ]] && confirm_yes_no "Register both services for auto start and auto restart?" "是否注册两个服务为自动启动和自动重启？" "N"; then
+    step "Preparing service registration" "正在准备服务注册"
     register_default_services
   fi
 

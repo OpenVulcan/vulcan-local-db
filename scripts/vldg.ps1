@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.1"
+$ScriptVersion = "0.1.2"
 $GlobalHome = Join-Path $HOME ".vulcan\vldg"
 $GlobalConfig = Join-Path $GlobalHome "config.json"
 $RunDir = Join-Path $GlobalHome "run"
@@ -24,6 +24,23 @@ try {
 function Write-Info {
     param([string]$Message)
     Write-Host $Message
+}
+
+function Start-DeferredCleanup {
+    param([string[]]$Paths)
+
+    $targets = @($Paths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if (-not $targets -or $targets.Count -eq 0) {
+        return
+    }
+
+    $quotedTargets = $targets | ForEach-Object { '"' + $_.Replace('"', '""') + '"' }
+    $cleanupCommand = "ping 127.0.0.1 -n 4 >nul"
+    foreach ($targetPath in $quotedTargets) {
+        $cleanupCommand += " & rmdir /s /q $targetPath"
+    }
+
+    Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cleanupCommand -WindowStyle Hidden | Out-Null
 }
 
 function Confirm-Choice {
@@ -600,6 +617,10 @@ function Toggle-ServiceRegistration {
 
 function Remove-LauncherOnly {
     $binDir = Join-Path $script:InstallDir "bin"
+    $launcherFiles = @(
+        (Join-Path $binDir "vldg.cmd"),
+        (Join-Path $binDir "vldg.ps1")
+    )
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $updated = ""
     if ($currentPath) {
@@ -607,9 +628,9 @@ function Remove-LauncherOnly {
     }
     [Environment]::SetEnvironmentVariable("Path", $updated, "User")
     [Environment]::SetEnvironmentVariable("VULCANLOCALDB_HOME", $null, "User")
-    Remove-Item (Join-Path $binDir "vldg.cmd") -Force -ErrorAction SilentlyContinue
-    Remove-Item (Join-Path $binDir "vldg.ps1") -Force -ErrorAction SilentlyContinue
-    Write-Info "The vldg launcher has been removed from future sessions."
+    Remove-Item $launcherFiles -Force -ErrorAction SilentlyContinue
+    Start-DeferredCleanup -Paths $launcherFiles
+    Write-Info "The vldg launcher has been removed from future sessions. Close this shell after you finish."
 }
 
 function Uninstall-All {
@@ -620,8 +641,8 @@ function Uninstall-All {
         }
     }
     Remove-LauncherOnly
-    Remove-Item $script:InstallDir -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item $script:GlobalHome -Recurse -Force -ErrorAction SilentlyContinue
+    Start-DeferredCleanup -Paths @($script:InstallDir, $script:GlobalHome)
+    Write-Info "VulcanLocalDB is being removed in the background."
     exit 0
 }
 
