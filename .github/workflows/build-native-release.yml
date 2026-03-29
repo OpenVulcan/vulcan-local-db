@@ -32,14 +32,14 @@ concurrency:
 jobs:
   build:
     name: ${{ matrix.service }} • ${{ matrix.target }}
-    runs-on: ${{ matrix.runner_mode == 'dynamic' && (matrix.runner == 'ubuntu-24.04' && 'ubuntu-24.04' || fromJSON(format('["self-hosted", "{0}"]', matrix.runner))) || matrix.runner }}
+    runs-on: ${{ fromJSON(matrix.runner_mode == 'dynamic' && matrix.runner != 'ubuntu-24.04' && format('["self-hosted", "{0}"]', matrix.runner) || format('["{0}"]', matrix.runner)) }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: ${{ github.event.inputs.lancedb_linux_runner || 'ubuntu-24.04' }}
+            runner: ${{ inputs.lancedb_linux_runner || 'ubuntu-24.04' }}
             runner_mode: dynamic
             target: x86_64-unknown-linux-gnu
           - service: vldb-lancedb
@@ -64,7 +64,7 @@ jobs:
             target: x86_64-pc-windows-msvc
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: ${{ github.event.inputs.duckdb_linux_runner || 'ubuntu-24.04' }}
+            runner: ${{ inputs.duckdb_linux_runner || 'ubuntu-24.04' }}
             runner_mode: dynamic
             target: x86_64-unknown-linux-gnu
           - service: vldb-duckdb
