@@ -159,8 +159,8 @@ jobs:
           CARGO_TERM_COLOR: always
         run: cargo build --locked --release --target ${{ matrix.target }}
 
-      - name: Package release archive
-        id: package
+      - name: Package release archive on Windows runner
+        if: runner.os == 'Windows'
         shell: pwsh
         env:
           SERVICE: ${{ matrix.service }}
@@ -175,13 +175,14 @@ jobs:
           } else {
             $version = 'unknown'
           }
-          $isWindows = $env:RUNNER_OS -eq 'Windows'
-          $ext = if ($isWindows) { '.exe' } else { '' }
-          $binPath = Join-Path $serviceDir "target/$($env:TARGET)/release/$($env:BINARY)$ext"
+
+          $isWindowsTarget = $env:TARGET -like '*windows*'
+          $ext = if ($isWindowsTarget) { '.exe' } else { '' }
           $packageName = "$($env:BINARY)-v$version-$($env:TARGET)"
+          $binPath = Join-Path $serviceDir "target/$($env:TARGET)/release/$($env:BINARY)$ext"
           $distDir = (New-Item -ItemType Directory -Force -Path (Join-Path $env:GITHUB_WORKSPACE 'dist')).FullName
           $stageDir = (New-Item -ItemType Directory -Force -Path (Join-Path $distDir $packageName)).FullName
-          $archiveExt = if ($isWindows) { '.zip' } else { '.tar.gz' }
+          $archiveExt = if ($isWindowsTarget) { '.zip' } else { '.tar.gz' }
           $archivePath = Join-Path $distDir "$packageName$archiveExt"
           $checksumPath = "$archivePath.sha256"
 
@@ -214,30 +215,114 @@ jobs:
             Remove-Item $checksumPath -Force
           }
 
-          if ($isWindows) {
+          if ($isWindowsTarget) {
             Compress-Archive -Path (Join-Path $stageDir '*') -DestinationPath $archivePath -CompressionLevel Optimal
           } else {
-            Push-Location $distDir
-            try {
-              tar -czf "$packageName.tar.gz" $packageName
-            } finally {
-              Pop-Location
-            }
+            tar -czf $archivePath -C $distDir $packageName
           }
 
           $hash = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLower()
           "$hash  $(Split-Path -Leaf $archivePath)" | Out-File -FilePath $checksumPath -Encoding ascii -NoNewline
 
-          "archive=$archivePath" >> $env:GITHUB_OUTPUT
-          "checksum=$checksumPath" >> $env:GITHUB_OUTPUT
+      - name: Package release archive on Unix runner
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          SERVICE: ${{ matrix.service }}
+          BINARY: ${{ matrix.binary }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          service_dir="$GITHUB_WORKSPACE/$SERVICE"
+          cargo_toml="$service_dir/Cargo.toml"
+          version="$(sed -nE 's/^version\s*=\s*"([^"]+)"/\1/p' "$cargo_toml" | head -n1)"
+          if [[ -z "$version" ]]; then
+            version="unknown"
+          fi
+
+          if [[ "$TARGET" == *windows* ]]; then
+            ext=".exe"
+            archive_ext=".zip"
+          else
+            ext=""
+            archive_ext=".tar.gz"
+          fi
+
+          package_name="${BINARY}-v${version}-${TARGET}"
+          bin_path="$service_dir/target/$TARGET/release/$BINARY$ext"
+          dist_dir="$GITHUB_WORKSPACE/dist"
+          stage_dir="$dist_dir/$package_name"
+          archive_path="$dist_dir/$package_name$archive_ext"
+          checksum_path="$archive_path.sha256"
+
+          mkdir -p "$stage_dir"
+
+          if [[ ! -f "$bin_path" ]]; then
+            echo "Binary not found at $bin_path" >&2
+            exit 1
+          fi
+
+          cp "$bin_path" "$stage_dir/$BINARY$ext"
+
+          example_file="$service_dir/$BINARY.json.example"
+          if [[ -f "$example_file" ]]; then
+            cp "$example_file" "$stage_dir/"
+          fi
+
+          for file_name in README.md LICENSE; do
+            if [[ -f "$service_dir/$file_name" ]]; then
+              cp "$service_dir/$file_name" "$stage_dir/"
+            elif [[ -f "$GITHUB_WORKSPACE/$file_name" ]]; then
+              cp "$GITHUB_WORKSPACE/$file_name" "$stage_dir/"
+            fi
+          done
+
+          rm -f "$archive_path" "$checksum_path"
+
+          if [[ "$archive_ext" == ".zip" ]]; then
+            python3 - "$stage_dir" "$archive_path" <<'PY'
+import os
+import sys
+import zipfile
+
+stage_dir, archive_path = sys.argv[1], sys.argv[2]
+base_dir = os.path.dirname(stage_dir)
+
+with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    for root, _, files in os.walk(stage_dir):
+        for filename in files:
+            full_path = os.path.join(root, filename)
+            rel_path = os.path.relpath(full_path, base_dir)
+            zf.write(full_path, rel_path)
+PY
+          else
+            tar -czf "$archive_path" -C "$dist_dir" "$package_name"
+          fi
+
+          python3 - "$archive_path" "$checksum_path" <<'PY'
+import hashlib
+import os
+import sys
+
+archive_path, checksum_path = sys.argv[1], sys.argv[2]
+hasher = hashlib.sha256()
+with open(archive_path, "rb") as f:
+    for chunk in iter(lambda: f.read(1024 * 1024), b""):
+        hasher.update(chunk)
+
+with open(checksum_path, "w", encoding="ascii", newline="") as f:
+    f.write(f"{hasher.hexdigest()}  {os.path.basename(archive_path)}")
+PY
 
       - name: Upload packaged binary
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.binary }}-${{ matrix.target }}
           path: |
-            ${{ steps.package.outputs.archive }}
-            ${{ steps.package.outputs.checksum }}
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
           if-no-files-found: error
           retention-days: 14
 
