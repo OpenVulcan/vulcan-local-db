@@ -175,20 +175,20 @@ jobs:
           } else {
             $version = 'unknown'
           }
-          $ext = if ($env:RUNNER_OS -eq 'Windows') { '.exe' } else { '' }
+          $isWindows = $env:RUNNER_OS -eq 'Windows'
+          $ext = if ($isWindows) { '.exe' } else { '' }
           $binPath = Join-Path $serviceDir "target/$($env:TARGET)/release/$($env:BINARY)$ext"
           $packageName = "$($env:BINARY)-v$version-$($env:TARGET)"
-          $distDir = Join-Path $env:GITHUB_WORKSPACE 'dist'
-          $stageDir = Join-Path $distDir $packageName
-          $archivePath = Join-Path $distDir "$packageName.zip"
+          $distDir = (New-Item -ItemType Directory -Force -Path (Join-Path $env:GITHUB_WORKSPACE 'dist')).FullName
+          $stageDir = (New-Item -ItemType Directory -Force -Path (Join-Path $distDir $packageName)).FullName
+          $archiveExt = if ($isWindows) { '.zip' } else { '.tar.gz' }
+          $archivePath = Join-Path $distDir "$packageName$archiveExt"
           $checksumPath = "$archivePath.sha256"
 
           if (!(Test-Path $binPath)) {
             Write-Error "Binary not found at $binPath"
             exit 1
           }
-
-          New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
           Copy-Item $binPath (Join-Path $stageDir "$($env:BINARY)$ext")
 
@@ -214,7 +214,16 @@ jobs:
             Remove-Item $checksumPath -Force
           }
 
-          Compress-Archive -Path (Join-Path $stageDir '*') -DestinationPath $archivePath -CompressionLevel Optimal
+          if ($isWindows) {
+            Compress-Archive -Path (Join-Path $stageDir '*') -DestinationPath $archivePath -CompressionLevel Optimal
+          } else {
+            Push-Location $distDir
+            try {
+              tar -czf "$packageName.tar.gz" $packageName
+            } finally {
+              Pop-Location
+            }
+          }
 
           $hash = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLower()
           "$hash  $(Split-Path -Leaf $archivePath)" | Out-File -FilePath $checksumPath -Encoding ascii -NoNewline
