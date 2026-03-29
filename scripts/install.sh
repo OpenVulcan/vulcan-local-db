@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.8"
+SCRIPT_VERSION="0.1.9"
 REPO_SLUG="OpenVulcan/vulcan-local-db"
 REPO_URL="https://github.com/OpenVulcan/vulcan-local-db"
 RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts"
@@ -11,14 +11,11 @@ RUNNER_DIR="${GLOBAL_HOME}/run"
 LANG_CODE="en"
 INSTALL_DIR=""
 INSTALL_TAG=""
-HOST_BIND="127.0.0.1"
-LANCEDB_PORT="50051"
-DUCKDB_PORT="50052"
 LANCEDB_ROOT="${GLOBAL_HOME}/lancedb"
 DUCKDB_ROOT="${GLOBAL_HOME}/duckdb"
 LATEST_RELEASE_JSON=""
-INSTALL_MODE="full"
 CONTROLLER_SCRIPT_VERSION="${SCRIPT_VERSION}"
+INITIALIZED=0
 
 say() {
   if [[ "${LANG_CODE}" == "zh-CN" ]]; then
@@ -34,6 +31,13 @@ line() {
 
 step() {
   line "[Step] $1" "[步骤] $2"
+}
+
+show_banner() {
+  printf '%s\n' "===================================="
+  printf '%s\n' "       VulcanLocalDB Setup"
+  printf '%s\n' "===================================="
+  line "The installer now installs only the manager." "安装器现在只负责安装管理器。"
 }
 
 prompt_default() {
@@ -488,84 +492,6 @@ choose_language() {
   esac
 }
 
-choose_install_mode() {
-  line "Install mode:" "安装模式："
-  printf '%s\n' "$(say "1. Full install (services + manager script)" "1. 完整安装（服务 + 管理脚本）")"
-  printf '%s\n' "$(say "2. Manager script only" "2. 仅安装管理脚本")"
-
-  local answer
-  while true; do
-    read -r -p "$(say "Select mode [1]: " "选择模式 [1]: ")" answer
-    case "${answer:-1}" in
-      1) INSTALL_MODE="full"; return ;;
-      2) INSTALL_MODE="controller-only"; return ;;
-      *) line "Please input 1 or 2." "请输入 1 或 2。" ;;
-    esac
-  done
-}
-
-choose_data_roots() {
-  local lance_root duck_root
-  local default_lance default_duck
-  local default_lance_path default_duck_path
-
-  default_lance="$(default_data_root "vldb-lancedb")"
-  default_duck="$(default_data_root "vldb-duckdb")"
-
-  while true; do
-    lance_root="$(prompt_default "LanceDB data root" "LanceDB 数据根目录" "${default_lance}")"
-    if ! is_valid_install_dir "${lance_root}"; then
-      line "Invalid LanceDB data root." "LanceDB 数据根目录不合法。"
-      continue
-    fi
-    if [[ -e "${lance_root}" && ! -d "${lance_root}" ]]; then
-      line "LanceDB data root already exists and is not a directory." "LanceDB 数据根目录已存在且不是目录。"
-      continue
-    fi
-    if paths_overlap "${INSTALL_DIR}" "${lance_root}"; then
-      line "LanceDB data root must stay outside the installation directory." "LanceDB 数据根目录必须位于安装目录之外。"
-      continue
-    fi
-
-    duck_root="$(prompt_default "DuckDB data root" "DuckDB 数据根目录" "${default_duck}")"
-    if ! is_valid_install_dir "${duck_root}"; then
-      line "Invalid DuckDB data root." "DuckDB 数据根目录不合法。"
-      continue
-    fi
-    if [[ -e "${duck_root}" && ! -d "${duck_root}" ]]; then
-      line "DuckDB data root already exists and is not a directory." "DuckDB 数据根目录已存在且不是目录。"
-      continue
-    fi
-    if paths_overlap "${INSTALL_DIR}" "${duck_root}"; then
-      line "DuckDB data root must stay outside the installation directory." "DuckDB 数据根目录必须位于安装目录之外。"
-      continue
-    fi
-    if paths_overlap "${lance_root}" "${duck_root}"; then
-      line "LanceDB and DuckDB data roots must not overlap." "LanceDB 和 DuckDB 数据根目录不能重叠。"
-      continue
-    fi
-
-    default_lance_path="$(default_instance_data_path "vldb-lancedb" "default" "${lance_root}" "${duck_root}")"
-    default_duck_path="$(default_instance_data_path "vldb-duckdb" "default" "${lance_root}" "${duck_root}")"
-
-    if ! validate_data_path "${default_lance_path}" "vldb-lancedb" "default"; then
-      continue
-    fi
-    if ! validate_data_path "${default_duck_path}" "vldb-duckdb" "default"; then
-      continue
-    fi
-
-    line "LanceDB default data path: ${default_lance_path}" "LanceDB 默认数据路径：${default_lance_path}"
-    line "DuckDB default data path: ${default_duck_path}" "DuckDB 默认数据路径：${default_duck_path}"
-    if confirm_yes_no "Confirm these database locations?" "确认这些数据库位置？" "Y"; then
-      LANCEDB_ROOT="${lance_root}"
-      DUCKDB_ROOT="${duck_root}"
-      mkdir -p "${LANCEDB_ROOT}" "${DUCKDB_ROOT}"
-      return
-    fi
-  done
-}
-
 choose_install_dir() {
   local default_dir
   local candidate
@@ -597,47 +523,6 @@ choose_install_dir() {
       return
     fi
   done
-}
-
-choose_network_settings() {
-  while true; do
-    HOST_BIND="$(prompt_default "Service bind IP" "服务绑定 IP" "127.0.0.1")"
-    [[ -n "${HOST_BIND}" ]] || {
-      line "IP must not be empty." "IP 不能为空。"
-      continue
-    }
-
-    LANCEDB_PORT="$(prompt_default "LanceDB port" "LanceDB 端口" "50051")"
-    is_valid_port "${LANCEDB_PORT}" || {
-      line "Invalid LanceDB port." "LanceDB 端口不合法。"
-      continue
-    }
-
-    DUCKDB_PORT="$(prompt_default "DuckDB port" "DuckDB 端口" "50052")"
-    is_valid_port "${DUCKDB_PORT}" || {
-      line "Invalid DuckDB port." "DuckDB 端口不合法。"
-      continue
-    }
-
-    if [[ "${LANCEDB_PORT}" == "${DUCKDB_PORT}" ]]; then
-      line "LanceDB and DuckDB must use different ports." "LanceDB 和 DuckDB 端口不能相同。"
-      continue
-    fi
-
-    return
-  done
-}
-
-fetch_latest_tag() {
-  step "Resolving the latest release information" "正在解析最新 release 信息"
-  ensure_command curl
-  LATEST_RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/latest")"
-  INSTALL_TAG="$(printf '%s\n' "${LATEST_RELEASE_JSON}" | sed -nE 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
-
-  if [[ -z "${INSTALL_TAG}" ]]; then
-    line "Unable to resolve the latest release tag." "无法解析最新 release 标签。"
-    exit 1
-  fi
 }
 
 download_with_progress() {
@@ -715,94 +600,6 @@ verify_checksum() {
   fi
 }
 
-download_asset_pair() {
-  local service="$1"
-  local tag="$2"
-  local target="$3"
-  local temp_dir="$4"
-  local archive_name="${service}-${tag}-${target}.tar.gz"
-  local checksum_name="${archive_name}.sha256"
-  local base_url="${REPO_URL}/releases/download/${tag}"
-  local archive_path="${temp_dir}/${archive_name}"
-  local checksum_path="${temp_dir}/${checksum_name}"
-
-  if ! release_has_asset "${archive_name}"; then
-    line "The current release does not provide ${archive_name}." "当前 release 不提供 ${archive_name}。"
-    exit 1
-  fi
-
-  download_with_progress "${base_url}/${archive_name}" "${archive_path}" "${archive_name}"
-  download_with_progress "${base_url}/${checksum_name}" "${checksum_path}" "${checksum_name}"
-  verify_checksum "${archive_path}" "${checksum_path}"
-
-  printf '%s\n' "${archive_path}"
-}
-
-extract_binary() {
-  local archive_path="$1"
-  local service="$2"
-  local temp_dir="$3"
-  local extract_dir="${temp_dir}/extract-${service}"
-  local binary_path
-  local example_path
-
-  step "Extracting ${service} package" "正在解压 ${service} 安装包"
-  rm -rf "${extract_dir}"
-  mkdir -p "${extract_dir}"
-  tar -xzf "${archive_path}" -C "${extract_dir}"
-
-  binary_path="$(find "${extract_dir}" -type f -name "${service}" | head -n1 || true)"
-  example_path="$(find "${extract_dir}" -type f -name "${service}.json.example" | head -n1 || true)"
-
-  if [[ -z "${binary_path}" || -z "${example_path}" ]]; then
-    line "The archive layout is missing the expected binary or example config." "压缩包缺少预期的可执行文件或示例配置文件。"
-    exit 1
-  fi
-
-  step "Installing ${service} binary and example config" "正在安装 ${service} 可执行文件和示例配置"
-  mkdir -p "${INSTALL_DIR}/bin" "${INSTALL_DIR}/share/examples"
-  install -m 755 "${binary_path}" "${INSTALL_DIR}/bin/${service}"
-  install -m 644 "${example_path}" "${INSTALL_DIR}/share/examples/${service}.json.example"
-}
-
-write_lancedb_config() {
-  local instance="$1"
-  local host="$2"
-  local port="$3"
-  local data_path="$4"
-  local config_path="${INSTALL_DIR}/config/vldb-lancedb-${instance}.json"
-
-  step "Writing LanceDB config for instance '${instance}'" "正在为实例 '${instance}' 写入 LanceDB 配置"
-  mkdir -p "${INSTALL_DIR}/config" "${data_path}"
-  cat >"${config_path}" <<EOF
-{
-  "host": "${host}",
-  "port": ${port},
-  "db_path": "${data_path}"
-}
-EOF
-}
-
-write_duckdb_config() {
-  local instance="$1"
-  local host="$2"
-  local port="$3"
-  local data_path="$4"
-  local config_path="${INSTALL_DIR}/config/vldb-duckdb-${instance}.json"
-
-  step "Writing DuckDB config for instance '${instance}'" "正在为实例 '${instance}' 写入 DuckDB 配置"
-  mkdir -p "${INSTALL_DIR}/config" "$(dirname "${data_path}")"
-  cat >"${config_path}" <<EOF
-{
-  "host": "${host}",
-  "port": ${port},
-  "db_path": "${data_path}",
-  "memory_limit": "2GB",
-  "threads": 4
-}
-EOF
-}
-
 write_global_config() {
   step "Writing global installer config" "正在写入全局安装配置"
   mkdir -p "${GLOBAL_HOME}"
@@ -813,7 +610,8 @@ write_global_config() {
   "release_tag": "${INSTALL_TAG}",
   "script_version": "${CONTROLLER_SCRIPT_VERSION}",
   "lancedb_root": "${LANCEDB_ROOT}",
-  "duckdb_root": "${DUCKDB_ROOT}"
+  "duckdb_root": "${DUCKDB_ROOT}",
+  "initialized": false
 }
 EOF
 }
@@ -1030,29 +828,8 @@ unregister_macos_service() {
   rm -f "${plist_path}"
 }
 
-register_default_services() {
-  case "$(uname -s)" in
-    Linux)
-      register_linux_service "vldb-lancedb" "default"
-      register_linux_service "vldb-duckdb" "default"
-      ;;
-    Darwin)
-      register_macos_service "vldb-lancedb" "default"
-      register_macos_service "vldb-duckdb" "default"
-      ;;
-    *)
-      line "Automatic service registration is not supported on this platform." "当前平台不支持自动服务注册。"
-      ;;
-  esac
-}
-
 main() {
-  local target
-  local temp_dir
-  local lancedb_archive
-  local duckdb_archive
-
-  ensure_command tar
+  show_banner
   choose_language
   show_update_notice
 
@@ -1060,48 +837,14 @@ main() {
     return 0
   fi
 
-  choose_install_mode
   choose_install_dir
-  choose_data_roots
-  if [[ "${INSTALL_MODE}" == "full" ]]; then
-    choose_network_settings
-    fetch_latest_tag
-    target="$(detect_target)" || {
-      line "Unsupported operating system or CPU architecture." "不支持当前操作系统或 CPU 架构。"
-      exit 1
-    }
-
-    line "Resolved release tag: ${INSTALL_TAG}" "解析到的 release 标签：${INSTALL_TAG}"
-    step "Creating temporary workspace" "正在创建临时工作目录"
-    temp_dir="$(mktemp -d)"
-    trap 'rm -rf "${temp_dir}"' EXIT
-
-    lancedb_archive="$(download_asset_pair "vldb-lancedb" "${INSTALL_TAG}" "${target}" "${temp_dir}")"
-    duckdb_archive="$(download_asset_pair "vldb-duckdb" "${INSTALL_TAG}" "${target}" "${temp_dir}")"
-
-    extract_binary "${lancedb_archive}" "vldb-lancedb" "${temp_dir}"
-    extract_binary "${duckdb_archive}" "vldb-duckdb" "${temp_dir}"
-
-    write_lancedb_config "default" "${HOST_BIND}" "${LANCEDB_PORT}" "$(default_instance_data_path "vldb-lancedb" "default")"
-    write_duckdb_config "default" "${HOST_BIND}" "${DUCKDB_PORT}" "$(default_instance_data_path "vldb-duckdb" "default")"
-  fi
-
   install_manager_script
   write_global_config
   ensure_profile_exports
-
-  if [[ "${INSTALL_MODE}" == "full" ]] && confirm_yes_no "Register both services for auto start and auto restart?" "是否注册两个服务为自动启动和自动重启？" "N"; then
-    step "Preparing service registration" "正在准备服务注册"
-    register_default_services
-  fi
-
-  if [[ "${INSTALL_MODE}" == "full" ]]; then
-    line "Installation completed." "安装完成。"
-  else
-    line "Manager script installation completed." "管理脚本安装完成。"
-  fi
+  line "Manager script installation completed." "管理脚本安装完成。"
   line "Manager command: ${INSTALL_DIR}/bin/vldb" "管理命令：${INSTALL_DIR}/bin/vldb"
-  line "Re-open your shell or source your profile to use 'vldb' from PATH." "重新打开终端或重新加载 shell 配置后，即可直接使用 'vldb'。"
+  line "Launching the manager to continue installation." "正在启动管理器继续完成安装。"
+  exec "${INSTALL_DIR}/bin/vldb" --from-installer
 }
 
 main "$@"

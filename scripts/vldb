@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.8"
+SCRIPT_VERSION="0.1.9"
 GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
@@ -18,6 +18,9 @@ LATEST_RELEASE_JSON=""
 PARSED_SERVICE=""
 PARSED_INSTANCE=""
 FROM_INSTALLER=0
+INITIALIZED=0
+DEFAULT_LANCEDB_PORT="27301"
+DEFAULT_DUCKDB_PORT="23702"
 
 if [[ "${1:-}" == "--from-installer" ]]; then
   FROM_INSTALLER=1
@@ -34,6 +37,60 @@ say() {
 
 line() {
   printf '%s\n' "$(say "$1" "$2")"
+}
+
+supports_color() {
+  [[ -t 1 ]] || return 1
+  [[ -n "${TERM:-}" && "${TERM}" != "dumb" ]]
+}
+
+write_color_line() {
+  local color_code="$1"
+  local message="$2"
+
+  if supports_color; then
+    printf '\033[%sm%s\033[0m\n' "${color_code}" "${message}"
+  else
+    printf '%s\n' "${message}"
+  fi
+}
+
+info() {
+  write_color_line "36" "$(say "$1" "$2")"
+}
+
+warn() {
+  write_color_line "31" "$(say "$1" "$2")"
+}
+
+success() {
+  write_color_line "32" "$(say "$1" "$2")"
+}
+
+step() {
+  write_color_line "33" "$(say "[Step] $1" "[步骤] $2")"
+}
+
+running() {
+  write_color_line "33" "$(say "Running $1..." "正在执行 $2……")"
+}
+
+completed_action() {
+  write_color_line "32" "$(say "$1 completed." "$2已完成。")"
+}
+
+invoke_menu_action() {
+  local label_en="$1"
+  local label_zh="$2"
+  local action_name="$3"
+  shift 3
+
+  running "${label_en}" "${label_zh}"
+  if "${action_name}" "$@"; then
+    completed_action "${label_en}" "${label_zh}"
+  else
+    warn "${label_en} failed." "${label_zh}失败。"
+  fi
 }
 
 confirm_yes_no() {
@@ -64,6 +121,10 @@ normalize_version() {
   local value="${1:-}"
   value="${value#v}"
   printf '%s' "${value}"
+}
+
+to_lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
 version_compare() {
@@ -204,6 +265,17 @@ read_json_number() {
   sed -nE "s/^[[:space:]]*\"${key}\"[[:space:]]*:[[:space:]]*([0-9]+)[[:space:]]*,?[[:space:]]*$/\1/p" "${file}" | head -n1
 }
 
+read_json_boolean() {
+  local file="$1"
+  local key="$2"
+  sed -nE "s/^[[:space:]]*\"${key}\"[[:space:]]*:[[:space:]]*(true|false)[[:space:]]*,?[[:space:]]*$/\1/p" "${file}" | head -n1
+}
+
+extract_script_version_from_file() {
+  local file="$1"
+  sed -nE 's/^SCRIPT_VERSION="([^"]+)".*/\1/p' "${file}" | head -n1
+}
+
 try_fetch_remote_script_version() {
   local script_name="$1"
   local content
@@ -232,6 +304,7 @@ try_fetch_latest_tag() {
 resolve_install_dir() {
   local script_dir
   local config_value
+  local initialized_value
 
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if [[ -f "${GLOBAL_CONFIG}" ]]; then
@@ -252,6 +325,10 @@ resolve_install_dir() {
     config_value="$(read_json_string "${GLOBAL_CONFIG}" "duckdb_root")"
     if [[ -n "${config_value}" ]]; then
       DUCKDB_ROOT="${config_value}"
+    fi
+    initialized_value="$(read_json_boolean "${GLOBAL_CONFIG}" "initialized")"
+    if [[ "${initialized_value}" == "true" ]]; then
+      INITIALIZED=1
     fi
   fi
 
@@ -275,9 +352,10 @@ write_global_config() {
   "language": "${LANG_CODE}",
   "install_dir": "${INSTALL_DIR}",
   "release_tag": "${INSTALL_TAG}",
-  "script_version": "${SCRIPT_VERSION}",
+  "script_version": "${INSTALLED_SCRIPT_VERSION}",
   "lancedb_root": "${LANCEDB_ROOT}",
-  "duckdb_root": "${DUCKDB_ROOT}"
+  "duckdb_root": "${DUCKDB_ROOT}",
+  "initialized": $( [[ "${INITIALIZED}" -eq 1 ]] && printf 'true' || printf 'false' )
 }
 EOF
 }
@@ -447,21 +525,33 @@ download_service_binary() {
 
 ensure_service_binary_installed() {
   local service="$1"
-  local target
-  local temp_dir
-
   if [[ -x "${INSTALL_DIR}/bin/${service}" ]]; then
     return
   fi
 
+  install_service_binary "${service}" "${INSTALL_TAG}"
+}
+
+install_service_binary() {
+  local service="$1"
+  local target_tag="${2:-}"
+  local target
+  local temp_dir
+
+  if [[ -n "${target_tag}" ]]; then
+    INSTALL_TAG="${target_tag}"
+  fi
+
   fetch_release_json
   target="$(detect_target)" || {
-    line "Unsupported operating system or CPU architecture." "不支持当前操作系统或 CPU 架构。"
+    warn "Unsupported operating system or CPU architecture." "不支持当前操作系统或 CPU 架构。"
     exit 1
   }
+
   temp_dir="$(mktemp -d)"
   download_service_binary "${service}" "${target}" "${temp_dir}"
   rm -rf "${temp_dir}"
+  INSTALL_TAG="${target_tag:-${INSTALL_TAG}}"
   write_global_config
 }
 
@@ -473,6 +563,21 @@ is_valid_port() {
 
 is_valid_instance_name() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$ ]]
+}
+
+is_valid_service_name() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
+}
+
+default_port() {
+  case "$1" in
+    vldb-lancedb) printf '%s' "${DEFAULT_LANCEDB_PORT}" ;;
+    *) printf '%s' "${DEFAULT_DUCKDB_PORT}" ;;
+  esac
+}
+
+legacy_service_name() {
+  printf '%s' "$1-$2"
 }
 
 default_instance_data_path() {
@@ -516,6 +621,31 @@ instance_config_path() {
   printf '%s' "${INSTALL_DIR}/config/$1-$2.json"
 }
 
+config_service_name() {
+  read_json_string "$1" "service_name"
+}
+
+service_registration_name() {
+  local service="$1"
+  local instance="$2"
+  local config_path="${3:-}"
+  local configured_name=""
+
+  if [[ -z "${config_path}" ]]; then
+    config_path="$(instance_config_path "${service}" "${instance}")"
+  fi
+
+  if [[ -f "${config_path}" ]]; then
+    configured_name="$(config_service_name "${config_path}")"
+  fi
+
+  if [[ -n "${configured_name}" ]]; then
+    printf '%s' "${configured_name}"
+  else
+    legacy_service_name "${service}" "${instance}"
+  fi
+}
+
 parse_instance_meta() {
   local basename="$1"
 
@@ -535,23 +665,13 @@ parse_instance_meta() {
   esac
 }
 
-instance_data_path() {
-  local service="$1"
-  local instance="$2"
-
-  if [[ "${service}" == "vldb-lancedb" ]]; then
-    printf '%s' "${INSTALL_DIR}/data/lancedb/${instance}"
-  else
-    printf '%s' "${INSTALL_DIR}/data/duckdb/${instance}/duckdb.db"
-  fi
-}
-
 write_service_config() {
   local service="$1"
   local instance="$2"
   local host="$3"
   local port="$4"
   local data_path="$5"
+  local service_name="$6"
   local config_path
 
   config_path="$(instance_config_path "${service}" "${instance}")"
@@ -563,7 +683,8 @@ write_service_config() {
 {
   "host": "${host}",
   "port": ${port},
-  "db_path": "${data_path}"
+  "db_path": "${data_path}",
+  "service_name": "${service_name}"
 }
 EOF
   else
@@ -574,7 +695,8 @@ EOF
   "port": ${port},
   "db_path": "${data_path}",
   "memory_limit": "2GB",
-  "threads": 4
+  "threads": 4,
+  "service_name": "${service_name}"
 }
 EOF
   fi
@@ -626,22 +748,280 @@ validate_data_path() {
   return 0
 }
 
-linux_unit_path() {
-  local unit_name="$1-$2.service"
+service_name_conflict_message() {
+  local candidate_name="$1"
+  local service="$2"
+  local instance="$3"
+  local file
+  local filename
+  local existing_name
+
+  while IFS= read -r file; do
+    filename="$(basename "${file}" .json)"
+    parse_instance_meta "${filename}"
+    if [[ "${PARSED_SERVICE}" == "${service}" && "${PARSED_INSTANCE}" == "${instance}" ]]; then
+      continue
+    fi
+
+    existing_name="$(service_registration_name "${PARSED_SERVICE}" "${PARSED_INSTANCE}" "${file}")"
+    if [[ -n "${existing_name}" && "$(to_lower "${existing_name}")" == "$(to_lower "${candidate_name}")" ]]; then
+      printf '%s' "$(say "Service name conflicts with ${PARSED_SERVICE}/${PARSED_INSTANCE}: ${existing_name}" "服务名与 ${PARSED_SERVICE}/${PARSED_INSTANCE} 冲突：${existing_name}")"
+      return 0
+    fi
+  done < <(list_config_files)
+
+  return 1
+}
+
+linux_unit_path_by_name() {
+  local service_name="$1"
   if [[ "$(id -u)" -eq 0 ]]; then
-    printf '%s' "/etc/systemd/system/${unit_name}"
+    printf '%s' "/etc/systemd/system/${service_name}.service"
   else
-    printf '%s' "${HOME}/.config/systemd/user/${unit_name}"
+    printf '%s' "${HOME}/.config/systemd/user/${service_name}.service"
   fi
 }
 
-launchd_plist_path() {
-  local label="com.openvulcan.$1.$2"
+launchd_plist_path_by_name() {
+  local service_name="$1"
   if [[ "$(id -u)" -eq 0 ]]; then
-    printf '%s' "/Library/LaunchDaemons/${label}.plist"
+    printf '%s' "/Library/LaunchDaemons/${service_name}.plist"
   else
-    printf '%s' "${HOME}/Library/LaunchAgents/${label}.plist"
+    printf '%s' "${HOME}/Library/LaunchAgents/${service_name}.plist"
   fi
+}
+
+service_name_exists_on_platform() {
+  local service_name="$1"
+  case "$(uname -s)" in
+    Linux)
+      if [[ -f "$(linux_unit_path_by_name "${service_name}")" ]]; then
+        return 0
+      fi
+      if command -v systemctl >/dev/null 2>&1; then
+        if [[ "$(id -u)" -eq 0 ]]; then
+          systemctl list-unit-files "${service_name}.service" --no-legend 2>/dev/null | grep -q "^${service_name}\.service"
+        else
+          systemctl --user list-unit-files "${service_name}.service" --no-legend 2>/dev/null | grep -q "^${service_name}\.service"
+        fi
+      else
+        return 1
+      fi
+      ;;
+    Darwin)
+      [[ -f "$(launchd_plist_path_by_name "${service_name}")" ]] && return 0
+      if [[ "$(id -u)" -eq 0 ]]; then
+        launchctl print "system/${service_name}" >/dev/null 2>&1
+      else
+        launchctl print "gui/$(id -u)/${service_name}" >/dev/null 2>&1
+      fi
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_service_name() {
+  local candidate_name="$1"
+  local service="$2"
+  local instance="$3"
+  local current_name="${4:-}"
+  local conflict_message=""
+
+  is_valid_service_name "${candidate_name}" || {
+    printf '%s' "$(say "Service names may contain letters, numbers, dot, dash, and underscore." "服务名只能包含字母、数字、点、连字符和下划线。")"
+    return 1
+  }
+
+  conflict_message="$(service_name_conflict_message "${candidate_name}" "${service}" "${instance}" || true)"
+  if [[ -n "${conflict_message}" ]]; then
+    printf '%s' "${conflict_message}"
+    return 1
+  fi
+
+  if service_name_exists_on_platform "${candidate_name}" && [[ -z "${current_name}" || "$(to_lower "${candidate_name}")" != "$(to_lower "${current_name}")" ]]; then
+    printf '%s' "$(say "A service with this name already exists on this system." "系统中已存在同名服务。")"
+    return 1
+  fi
+
+  return 0
+}
+
+new_unique_service_name() {
+  local service="$1"
+  local instance="$2"
+  local preferred_name="${3:-}"
+  local current_name="${4:-}"
+  local base_name
+  local candidate
+  local suffix=2
+
+  if [[ -n "${preferred_name}" ]]; then
+    base_name="${preferred_name}"
+  else
+    base_name="$(legacy_service_name "${service}" "${instance}")"
+  fi
+
+  candidate="${base_name}"
+  while true; do
+    if validate_service_name "${candidate}" "${service}" "${instance}" "${current_name}" >/dev/null; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+    candidate="${base_name}-${suffix}"
+    suffix=$((suffix + 1))
+  done
+}
+
+port_conflict_message() {
+  local candidate_port="$1"
+  local service="$2"
+  local instance="$3"
+  local file
+  local filename
+  local existing_port
+
+  while IFS= read -r file; do
+    filename="$(basename "${file}" .json)"
+    parse_instance_meta "${filename}"
+    if [[ "${PARSED_SERVICE}" == "${service}" && "${PARSED_INSTANCE}" == "${instance}" ]]; then
+      continue
+    fi
+
+    existing_port="$(config_port "${file}")"
+    if [[ -n "${existing_port}" && "${existing_port}" == "${candidate_port}" ]]; then
+      printf '%s' "$(say "Port ${candidate_port} conflicts with ${PARSED_SERVICE}/${PARSED_INSTANCE}." "端口 ${candidate_port} 与 ${PARSED_SERVICE}/${PARSED_INSTANCE} 冲突。")"
+      return 0
+    fi
+  done < <(list_config_files)
+
+  return 1
+}
+
+test_port_available() {
+  local port="$1"
+
+  if command -v lsof >/dev/null 2>&1; then
+    ! lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
+    return
+  fi
+
+  if command -v ss >/dev/null 2>&1; then
+    ! ss -ltn "( sport = :${port} )" 2>/dev/null | tail -n +2 | grep -q .
+    return
+  fi
+
+  if command -v netstat >/dev/null 2>&1; then
+    ! netstat -an 2>/dev/null | grep -E "[\.:]${port}[[:space:]].*LISTEN" >/dev/null
+    return
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "${port}" <<'PY'
+import socket
+import sys
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    sock.bind(("0.0.0.0", int(sys.argv[1])))
+except OSError:
+    sys.exit(1)
+finally:
+    sock.close()
+sys.exit(0)
+PY
+    return
+  fi
+
+  if command -v python >/dev/null 2>&1; then
+    python - "${port}" <<'PY'
+import socket
+import sys
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    sock.bind(("0.0.0.0", int(sys.argv[1])))
+except OSError:
+    sys.exit(1)
+finally:
+    sock.close()
+sys.exit(0)
+PY
+    return
+  fi
+
+  return 0
+}
+
+service_running_by_name() {
+  local service_name="$1"
+  local domain
+
+  case "$(uname -s)" in
+    Linux)
+      if [[ "$(id -u)" -eq 0 ]]; then
+        systemctl is-active --quiet "${service_name}.service"
+      else
+        systemctl --user is-active --quiet "${service_name}.service"
+      fi
+      ;;
+    Darwin)
+      if [[ "$(id -u)" -eq 0 ]]; then
+        domain="system"
+      else
+        domain="gui/$(id -u)"
+      fi
+      launchctl print "${domain}/${service_name}" 2>/dev/null | grep -Eq 'pid = [1-9][0-9]*'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+validate_port() {
+  local candidate_port="$1"
+  local service="$2"
+  local instance="$3"
+  local current_port="${4:-}"
+  local current_service_name="${5:-}"
+  local conflict_message=""
+
+  is_valid_port "${candidate_port}" || {
+    printf '%s' "$(say "Invalid port." "端口不合法。")"
+    return 1
+  }
+
+  conflict_message="$(port_conflict_message "${candidate_port}" "${service}" "${instance}" || true)"
+  if [[ -n "${conflict_message}" ]]; then
+    printf '%s' "${conflict_message}"
+    return 1
+  fi
+
+  if test_port_available "${candidate_port}"; then
+    return 0
+  fi
+
+  if [[ -n "${current_port}" && -n "${current_service_name}" && "${candidate_port}" == "${current_port}" ]] && service_running_by_name "${current_service_name}"; then
+    return 0
+  fi
+
+  printf '%s' "$(say "Port ${candidate_port} is already in use. Please choose another port." "端口 ${candidate_port} 已被占用，请改用其他端口。")"
+  return 1
+}
+
+is_initialized() {
+  [[ "${INITIALIZED}" -eq 1 ]] && return 0
+  [[ -n "$(list_config_files | head -n1)" ]]
+}
+
+linux_unit_path() {
+  linux_unit_path_by_name "$(service_registration_name "$1" "$2" "${3:-}")"
+}
+
+launchd_plist_path() {
+  launchd_plist_path_by_name "$(service_registration_name "$1" "$2" "${3:-}")"
 }
 
 runner_path() {
@@ -668,10 +1048,14 @@ EOF
 is_registered() {
   local service="$1"
   local instance="$2"
+  local config_path="${3:-}"
+  local registered_name
+
+  registered_name="$(service_registration_name "${service}" "${instance}" "${config_path}")"
 
   case "$(uname -s)" in
-    Linux) [[ -f "$(linux_unit_path "${service}" "${instance}")" ]] ;;
-    Darwin) [[ -f "$(launchd_plist_path "${service}" "${instance}")" ]] ;;
+    Linux) [[ -f "$(linux_unit_path_by_name "${registered_name}")" ]] ;;
+    Darwin) [[ -f "$(launchd_plist_path_by_name "${registered_name}")" ]] ;;
     *) return 1 ;;
   esac
 }
@@ -680,18 +1064,19 @@ register_instance() {
   local service="$1"
   local instance="$2"
   local runner_file
+  local registered_name
 
   write_runner_script "${service}" "${instance}"
   runner_file="$(runner_path "${service}" "${instance}")"
+  registered_name="$(service_registration_name "${service}" "${instance}")"
 
   case "$(uname -s)" in
     Linux)
       local unit_path
-      local unit_name="${service}-${instance}.service"
       local wanted_by="multi-user.target"
       local systemctl_cmd=(systemctl)
 
-      unit_path="$(linux_unit_path "${service}" "${instance}")"
+      unit_path="$(linux_unit_path_by_name "${registered_name}")"
       mkdir -p "$(dirname "${unit_path}")"
       if [[ "$(id -u)" -ne 0 ]]; then
         wanted_by="default.target"
@@ -703,7 +1088,7 @@ register_instance() {
 
       cat >"${unit_path}" <<EOF
 [Unit]
-Description=${service} (${instance})
+Description=${registered_name}
 After=network.target
 
 [Service]
@@ -717,13 +1102,12 @@ WorkingDirectory=${INSTALL_DIR}
 WantedBy=${wanted_by}
 EOF
       "${systemctl_cmd[@]}" daemon-reload
-      "${systemctl_cmd[@]}" enable --now "${unit_name}"
+      "${systemctl_cmd[@]}" enable --now "${registered_name}.service"
       ;;
     Darwin)
       local plist_path
-      local label="com.openvulcan.${service}.${instance}"
 
-      plist_path="$(launchd_plist_path "${service}" "${instance}")"
+      plist_path="$(launchd_plist_path_by_name "${registered_name}")"
       mkdir -p "$(dirname "${plist_path}")"
       cat >"${plist_path}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -731,7 +1115,7 @@ EOF
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>${label}</string>
+    <string>${registered_name}</string>
     <key>ProgramArguments</key>
     <array>
       <string>${runner_file}</string>
@@ -758,22 +1142,26 @@ EOF
 unregister_instance() {
   local service="$1"
   local instance="$2"
+  local registered_name="${3:-}"
+
+  if [[ -z "${registered_name}" ]]; then
+    registered_name="$(service_registration_name "${service}" "${instance}")"
+  fi
 
   case "$(uname -s)" in
     Linux)
-      local unit_name="${service}-${instance}.service"
       local unit_path
       local systemctl_cmd=(systemctl)
 
-      unit_path="$(linux_unit_path "${service}" "${instance}")"
+      unit_path="$(linux_unit_path_by_name "${registered_name}")"
       [[ "$(id -u)" -eq 0 ]] || systemctl_cmd+=(--user)
-      "${systemctl_cmd[@]}" disable --now "${unit_name}" >/dev/null 2>&1 || true
+      "${systemctl_cmd[@]}" disable --now "${registered_name}.service" >/dev/null 2>&1 || true
       rm -f "${unit_path}"
       "${systemctl_cmd[@]}" daemon-reload >/dev/null 2>&1 || true
       ;;
     Darwin)
       local plist_path
-      plist_path="$(launchd_plist_path "${service}" "${instance}")"
+      plist_path="$(launchd_plist_path_by_name "${registered_name}")"
       launchctl unload -w "${plist_path}" >/dev/null 2>&1 || true
       rm -f "${plist_path}"
       ;;
@@ -785,16 +1173,177 @@ unregister_instance() {
   rm -f "$(runner_path "${service}" "${instance}")"
 }
 
+start_instance_service() {
+  local service="$1"
+  local instance="$2"
+  local registered_name
+
+  registered_name="$(service_registration_name "${service}" "${instance}")"
+  if ! is_registered "${service}" "${instance}"; then
+    info "This instance is not registered. Re-registering it now." "该实例尚未注册，正在重新注册。"
+    register_instance "${service}" "${instance}"
+    return 0
+  fi
+
+  case "$(uname -s)" in
+    Linux)
+      if [[ "$(id -u)" -eq 0 ]]; then
+        systemctl start "${registered_name}.service"
+      else
+        systemctl --user start "${registered_name}.service"
+      fi
+      ;;
+    Darwin)
+      launchctl load -w "$(launchd_plist_path_by_name "${registered_name}")"
+      ;;
+    *)
+      warn "Service start is not supported on this platform." "当前平台不支持启动服务。"
+      return 1
+      ;;
+  esac
+}
+
+stop_instance_service() {
+  local service="$1"
+  local instance="$2"
+  local registered_name
+
+  registered_name="$(service_registration_name "${service}" "${instance}")"
+  if ! is_registered "${service}" "${instance}"; then
+    info "This instance is not registered." "该实例尚未注册。"
+    return 0
+  fi
+
+  case "$(uname -s)" in
+    Linux)
+      if [[ "$(id -u)" -eq 0 ]]; then
+        systemctl stop "${registered_name}.service"
+      else
+        systemctl --user stop "${registered_name}.service"
+      fi
+      ;;
+    Darwin)
+      launchctl unload -w "$(launchd_plist_path_by_name "${registered_name}")"
+      ;;
+    *)
+      warn "Service stop is not supported on this platform." "当前平台不支持停止服务。"
+      return 1
+      ;;
+  esac
+}
+
+choose_data_roots() {
+  local lance_root duck_root
+  local default_lance default_duck
+  local default_lance_path default_duck_path
+
+  default_lance="${LANCEDB_ROOT:-${GLOBAL_HOME}/lancedb}"
+  default_duck="${DUCKDB_ROOT:-${GLOBAL_HOME}/duckdb}"
+
+  while true; do
+    lance_root="$(prompt_config_value "LanceDB data root" "LanceDB 数据根目录" "${default_lance}")"
+    if ! [[ "${lance_root}" = /* ]]; then
+      info "Invalid LanceDB data root." "LanceDB 数据根目录不合法。"
+      continue
+    fi
+    if [[ -e "${lance_root}" && ! -d "${lance_root}" ]]; then
+      info "LanceDB data root already exists and is not a directory." "LanceDB 数据根目录已存在且不是目录。"
+      continue
+    fi
+    if paths_overlap "${INSTALL_DIR}" "${lance_root}"; then
+      info "LanceDB data root must stay outside the installation directory." "LanceDB 数据根目录必须位于安装目录之外。"
+      continue
+    fi
+
+    duck_root="$(prompt_config_value "DuckDB data root" "DuckDB 数据根目录" "${default_duck}")"
+    if ! [[ "${duck_root}" = /* ]]; then
+      info "Invalid DuckDB data root." "DuckDB 数据根目录不合法。"
+      continue
+    fi
+    if [[ -e "${duck_root}" && ! -d "${duck_root}" ]]; then
+      info "DuckDB data root already exists and is not a directory." "DuckDB 数据根目录已存在且不是目录。"
+      continue
+    fi
+    if paths_overlap "${INSTALL_DIR}" "${duck_root}"; then
+      info "DuckDB data root must stay outside the installation directory." "DuckDB 数据根目录必须位于安装目录之外。"
+      continue
+    fi
+    if paths_overlap "${lance_root}" "${duck_root}"; then
+      info "LanceDB and DuckDB data roots must not overlap." "LanceDB 和 DuckDB 数据根目录不能重叠。"
+      continue
+    fi
+
+    default_lance_path="$(default_instance_data_path "vldb-lancedb" "default" "${lance_root}" "${duck_root}")"
+    default_duck_path="$(default_instance_data_path "vldb-duckdb" "default" "${lance_root}" "${duck_root}")"
+    validate_data_path "${default_lance_path}" "vldb-lancedb" "default" >/dev/null || {
+      info "LanceDB default data path conflicts with an existing instance." "LanceDB 默认数据路径与已有实例冲突。"
+      continue
+    }
+    validate_data_path "${default_duck_path}" "vldb-duckdb" "default" >/dev/null || {
+      info "DuckDB default data path conflicts with an existing instance." "DuckDB 默认数据路径与已有实例冲突。"
+      continue
+    }
+
+    LANCEDB_ROOT="${lance_root%/}"
+    DUCKDB_ROOT="${duck_root%/}"
+    mkdir -p "${LANCEDB_ROOT}" "${DUCKDB_ROOT}"
+    return 0
+  done
+}
+
+prompt_for_port() {
+  local prompt_en="$1"
+  local prompt_zh="$2"
+  local default_port="$3"
+  local service="$4"
+  local instance="$5"
+  local current_port="${6:-}"
+  local current_service_name="${7:-}"
+  local candidate
+  local validation_error
+
+  while true; do
+    candidate="$(prompt_config_value "${prompt_en}" "${prompt_zh}" "${default_port}")"
+    validation_error="$(validate_port "${candidate}" "${service}" "${instance}" "${current_port}" "${current_service_name}" || true)"
+    if [[ -z "${validation_error}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+    info "${validation_error}" "${validation_error}"
+  done
+}
+
+prompt_for_service_name() {
+  local service="$1"
+  local instance="$2"
+  local default_name="$3"
+  local current_name="${4:-}"
+  local candidate
+  local validation_error
+
+  while true; do
+    candidate="$(prompt_config_value "Service name" "服务名" "${default_name}")"
+    validation_error="$(validate_service_name "${candidate}" "${service}" "${instance}" "${current_name}" || true)"
+    if [[ -z "${validation_error}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+    info "${validation_error}" "${validation_error}"
+  done
+}
+
 choose_service() {
   local answer
 
   line "Select a service: 1) LanceDB  2) DuckDB" "选择服务：1) LanceDB  2) DuckDB"
+  printf '%s\n' "$(say "0. Back" "0. 返回")"
   while true; do
-    read -r -p "$(say "Choice [1/2]: " "输入 [1/2]：")" answer
+    read -r -p "$(say "Choice [1/2/0]: " "输入 [1/2/0]：")" answer
     case "${answer}" in
       1) printf '%s' "vldb-lancedb"; return ;;
       2) printf '%s' "vldb-duckdb"; return ;;
-      *) line "Please input 1 or 2." "请输入 1 或 2。" ;;
+      0) return 1 ;;
+      *) line "Please input 1, 2, or 0." "请输入 1、2 或 0。" ;;
     esac
   done
 }
@@ -823,14 +1372,18 @@ choose_instance_file() {
     printf '%s\n' "${index}. ${base}"
     index=$((index + 1))
   done
+  printf '%s\n' "$(say "0. Back" "0. 返回")"
 
   while true; do
     read -r -p "$(say "Select instance: " "选择实例：")" answer
+    if [[ "${answer}" == "0" ]]; then
+      return 1
+    fi
     if [[ "${answer}" =~ ^[0-9]+$ ]] && (( answer >= 1 && answer <= ${#files[@]} )); then
       printf '%s' "${files[$((answer - 1))]}"
       return 0
     fi
-    line "Invalid selection." "选择无效。"
+    line "Invalid selection. Please choose a listed number or 0." "选择无效，请输入列表中的编号或 0。"
   done
 }
 
@@ -838,8 +1391,10 @@ switch_language() {
   local answer
   printf '%s\n' "1. English"
   printf '%s\n' "2. 简体中文"
-  read -r -p "Select language [1]: " answer
+  printf '%s\n' "$(say "0. Back" "0. 返回")"
+  read -r -p "Select language [1/2/0]: " answer
   case "${answer:-1}" in
+    0) return 0 ;;
     2) LANG_CODE="zh-CN" ;;
     *) LANG_CODE="en" ;;
   esac
@@ -851,7 +1406,7 @@ check_updates() {
   local latest_tag=""
   local cmp
 
-  line "Checking for updates..." "正在检查更新……"
+  info "Checking for updates..." "正在检查更新……"
   remote_script_version="$(try_fetch_remote_script_version "vldb" || true)"
   latest_tag="$(try_fetch_latest_tag || true)"
 
@@ -860,7 +1415,10 @@ check_updates() {
     line "Latest manager script version: ${remote_script_version}" "最新管理脚本版本：${remote_script_version}"
     cmp="$(version_compare "${remote_script_version}" "${SCRIPT_VERSION}")"
     if [[ "${cmp}" == "1" ]]; then
-      line "Manager script update available." "管理脚本有可用更新。"
+      info "Manager script update available." "管理脚本有可用更新。"
+      if confirm_yes_no "Update the manager script now?" "现在更新管理脚本？" "Y"; then
+        update_manager_script
+      fi
     else
       line "Manager script is up to date." "管理脚本已是最新。"
     fi
@@ -881,7 +1439,10 @@ check_updates() {
     else
       cmp="$(version_compare "${latest_tag}" "${INSTALL_TAG}")"
       if [[ "${cmp}" == "1" ]]; then
-        line "A newer binary release is available." "发现更新的二进制 release。"
+        info "A newer binary release is available." "发现更新的二进制 release。"
+        if confirm_yes_no "Update application binaries now?" "现在更新应用二进制文件？" "Y"; then
+          update_applications_to_tag "${latest_tag}"
+        fi
       else
         line "Binary release is up to date." "二进制 release 已是最新。"
       fi
@@ -899,8 +1460,11 @@ configure_instance() {
   local port
   local data_path
   local filename
+  local current_service_name
+  local service_name
+  local data_path_error
 
-  file="$(choose_instance_file)" || return
+  file="$(choose_instance_file)" || return 0
   filename="$(basename "${file}" .json)"
   parse_instance_meta "${filename}"
   service="${PARSED_SERVICE}"
@@ -908,26 +1472,35 @@ configure_instance() {
   host="$(config_host "${file}")"
   port="$(config_port "${file}")"
   data_path="$(config_db_path "${file}")"
+  current_service_name="$(service_registration_name "${service}" "${instance}" "${file}")"
 
   while true; do
     host="$(prompt_config_value "Bind IP" "绑定 IP" "${host}")"
-    port="$(prompt_config_value "Port" "端口" "${port}")"
-    is_valid_port "${port}" || {
-      line "Invalid port." "端口不合法。"
+    if [[ -z "${host}" ]]; then
+      info "IP must not be empty." "IP 不能为空。"
       continue
-    }
+    fi
+
+    port="$(prompt_for_port "Port" "端口" "${port}" "${service}" "${instance}" "${port}" "${current_service_name}")"
 
     data_path="$(prompt_config_value "Data path" "数据路径" "${data_path}")"
-    validate_data_path "${data_path}" "${service}" "${instance}" || continue
+    data_path_error="$(validate_data_path "${data_path}" "${service}" "${instance}" || true)"
+    if [[ -n "${data_path_error}" ]]; then
+      info "${data_path_error}" "${data_path_error}"
+      continue
+    fi
+
+    service_name="$(prompt_for_service_name "${service}" "${instance}" "$(new_unique_service_name "${service}" "${instance}" "${current_service_name}" "${current_service_name}")" "${current_service_name}")"
     break
   done
 
-  write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}"
-  write_global_config
-  if is_registered "${service}" "${instance}"; then
-    unregister_instance "${service}" "${instance}"
-    register_instance "${service}" "${instance}"
+  if is_registered "${service}" "${instance}" "${file}"; then
+    unregister_instance "${service}" "${instance}" "${current_service_name}"
   fi
+
+  write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}" "${service_name}"
+  register_instance "${service}" "${instance}"
+  write_global_config
 }
 
 prompt_config_value() {
@@ -940,16 +1513,65 @@ prompt_config_value() {
   printf '%s' "${answer:-${default_value}}"
 }
 
+initialize_installation() {
+  local host
+  local lancedb_port
+  local duckdb_port
+  local lancedb_service_name
+  local duckdb_service_name
+
+  step "Running initial one-click installation" "正在执行首次一键安装"
+  fetch_release_json
+  choose_data_roots
+
+  while true; do
+    host="$(prompt_config_value "Service bind IP" "服务绑定 IP" "127.0.0.1")"
+    if [[ -n "${host}" ]]; then
+      break
+    fi
+    info "IP must not be empty." "IP 不能为空。"
+  done
+
+  lancedb_port="$(prompt_for_port "LanceDB port" "LanceDB 端口" "$(default_port "vldb-lancedb")" "vldb-lancedb" "default")"
+  while true; do
+    duckdb_port="$(prompt_for_port "DuckDB port" "DuckDB 端口" "$(default_port "vldb-duckdb")" "vldb-duckdb" "default")"
+    if [[ "${duckdb_port}" != "${lancedb_port}" ]]; then
+      break
+    fi
+    info "LanceDB and DuckDB must use different ports." "LanceDB 和 DuckDB 必须使用不同端口。"
+  done
+
+  lancedb_service_name="$(prompt_for_service_name "vldb-lancedb" "default" "$(new_unique_service_name "vldb-lancedb" "default")")"
+  duckdb_service_name="$(prompt_for_service_name "vldb-duckdb" "default" "$(new_unique_service_name "vldb-duckdb" "default")")"
+  while [[ "$(to_lower "${lancedb_service_name}")" == "$(to_lower "${duckdb_service_name}")" ]]; do
+    info "The two default instances must not share the same service name." "两个默认实例不能使用相同的服务名。"
+    duckdb_service_name="$(prompt_for_service_name "vldb-duckdb" "default" "$(new_unique_service_name "vldb-duckdb" "default" "${duckdb_service_name}")" "${duckdb_service_name}")"
+  done
+
+  install_service_binary "vldb-lancedb" "${INSTALL_TAG}"
+  install_service_binary "vldb-duckdb" "${INSTALL_TAG}"
+  write_service_config "vldb-lancedb" "default" "${host}" "${lancedb_port}" "$(default_instance_data_path "vldb-lancedb" "default")" "${lancedb_service_name}"
+  write_service_config "vldb-duckdb" "default" "${host}" "${duckdb_port}" "$(default_instance_data_path "vldb-duckdb" "default")" "${duckdb_service_name}"
+  register_instance "vldb-lancedb" "default"
+  register_instance "vldb-duckdb" "default"
+
+  INITIALIZED=1
+  INSTALLED_SCRIPT_VERSION="${SCRIPT_VERSION}"
+  write_global_config
+  success "Initial installation completed." "首次安装已完成。"
+}
+
 install_single_instance() {
   local service
   local instance
   local host
   local port
   local data_path
-  local default_port
   local default_data_path
+  local service_name
+  local data_path_error
 
-  service="$(choose_service)"
+  service="$(choose_service)" || return 0
   ensure_service_binary_installed "${service}"
   while true; do
     instance="$(prompt_config_value "Instance name" "实例名称" "default")"
@@ -964,29 +1586,31 @@ install_single_instance() {
     break
   done
 
-  host="$(prompt_config_value "Bind IP" "绑定 IP" "127.0.0.1")"
-  default_port="50051"
-  if [[ "${service}" == "vldb-duckdb" ]]; then
-    default_port="50052"
-  fi
   while true; do
-    port="$(prompt_config_value "Port" "端口" "${default_port}")"
-    is_valid_port "${port}" || {
-      line "Invalid port." "端口不合法。"
+    host="$(prompt_config_value "Bind IP" "绑定 IP" "127.0.0.1")"
+    if [[ -z "${host}" ]]; then
+      info "IP must not be empty." "IP 不能为空。"
       continue
-    }
+    fi
+
+    port="$(prompt_for_port "Port" "端口" "$(default_port "${service}")" "${service}" "${instance}")"
 
     default_data_path="$(default_instance_data_path "${service}" "${instance}")"
     data_path="$(prompt_config_value "Data path" "数据路径" "${default_data_path}")"
-    validate_data_path "${data_path}" "${service}" "${instance}" || continue
+    data_path_error="$(validate_data_path "${data_path}" "${service}" "${instance}" || true)"
+    if [[ -n "${data_path_error}" ]]; then
+      info "${data_path_error}" "${data_path_error}"
+      continue
+    fi
+
+    service_name="$(prompt_for_service_name "${service}" "${instance}" "$(new_unique_service_name "${service}" "${instance}")")"
     break
   done
 
-  write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}"
+  write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}" "${service_name}"
+  register_instance "${service}" "${instance}"
+  INITIALIZED=1
   write_global_config
-  if confirm_yes_no "Register this instance as a service now?" "现在将该实例注册为服务？" "N"; then
-    register_instance "${service}" "${instance}"
-  fi
 }
 
 uninstall_single_instance() {
@@ -995,42 +1619,79 @@ uninstall_single_instance() {
   local service
   local instance
   local data_path
+  local registered_name
 
-  file="$(choose_instance_file)" || return
+  file="$(choose_instance_file)" || return 0
   filename="$(basename "${file}" .json)"
   parse_instance_meta "${filename}"
   service="${PARSED_SERVICE}"
   instance="${PARSED_INSTANCE}"
   data_path="$(config_db_path "${file}")"
+  registered_name="$(service_registration_name "${service}" "${instance}" "${file}")"
 
-  if is_registered "${service}" "${instance}"; then
-    unregister_instance "${service}" "${instance}"
+  if is_registered "${service}" "${instance}" "${file}"; then
+    unregister_instance "${service}" "${instance}" "${registered_name}"
   fi
 
   rm -f "${file}"
+  if [[ -z "$(list_config_files | head -n1)" ]]; then
+    INITIALIZED=0
+    write_global_config
+  fi
   line "Database files were preserved at: ${data_path}" "数据库文件已保留在：${data_path}"
 }
 
-toggle_service_registration() {
+start_single_instance() {
   local file
   local filename
   local service
   local instance
 
-  file="$(choose_instance_file)" || return
+  file="$(choose_instance_file)" || return 0
   filename="$(basename "${file}" .json)"
   parse_instance_meta "${filename}"
   service="${PARSED_SERVICE}"
   instance="${PARSED_INSTANCE}"
-
-  if is_registered "${service}" "${instance}"; then
-    unregister_instance "${service}" "${instance}"
-  else
-    register_instance "${service}" "${instance}"
-  fi
+  start_instance_service "${service}" "${instance}"
 }
 
-print_status() {
+stop_single_instance() {
+  local file
+  local filename
+  local service
+  local instance
+
+  file="$(choose_instance_file)" || return 0
+  filename="$(basename "${file}" .json)"
+  parse_instance_meta "${filename}"
+  service="${PARSED_SERVICE}"
+  instance="${PARSED_INSTANCE}"
+  stop_instance_service "${service}" "${instance}"
+}
+
+start_all_instances() {
+  local file
+  local filename
+
+  while IFS= read -r file; do
+    filename="$(basename "${file}" .json)"
+    parse_instance_meta "${filename}"
+    start_instance_service "${PARSED_SERVICE}" "${PARSED_INSTANCE}"
+  done < <(list_config_files)
+}
+
+stop_all_instances() {
+  local file
+  local filename
+
+  while IFS= read -r file; do
+    filename="$(basename "${file}" .json)"
+    parse_instance_meta "${filename}"
+    stop_instance_service "${PARSED_SERVICE}" "${PARSED_INSTANCE}"
+  done < <(list_config_files)
+}
+
+show_instances() {
   local file
   local filename
   local service
@@ -1038,7 +1699,14 @@ print_status() {
   local host
   local port
   local db_path
-  local status
+  local registered_name
+  local registration
+  local runtime
+
+  if [[ -z "$(list_config_files | head -n1)" ]]; then
+    info "No installed instances were found." "没有找到已安装的实例。"
+    return 0
+  fi
 
   while IFS= read -r file; do
     filename="$(basename "${file}" .json)"
@@ -1048,13 +1716,89 @@ print_status() {
     host="$(config_host "${file}")"
     port="$(config_port "${file}")"
     db_path="$(config_db_path "${file}")"
-    if is_registered "${service}" "${instance}"; then
-      status="$(say "registered" "已注册")"
+    registered_name="$(service_registration_name "${service}" "${instance}" "${file}")"
+    if is_registered "${service}" "${instance}" "${file}"; then
+      registration="$(say "registered" "已注册")"
     else
-      status="$(say "not registered" "未注册")"
+      registration="$(say "not registered" "未注册")"
     fi
-    printf '%s\n' "$(service_display_name "${service}") ${instance} | ${host}:${port} | ${status} | ${db_path}"
+    if service_running_by_name "${registered_name}"; then
+      runtime="$(say "running" "运行中")"
+    else
+      runtime="$(say "stopped" "已停止")"
+    fi
+    printf '%s %s | %s | %s:%s | %s/%s | %s\n' "$(service_display_name "${service}")" "${instance}" "${registered_name}" "${host}" "${port}" "${registration}" "${runtime}" "${db_path}"
   done < <(list_config_files)
+}
+
+update_manager_script() {
+  local manager_path="${INSTALL_DIR}/bin/vldb"
+  local temp_path
+
+  temp_path="$(mktemp)"
+  download_with_progress "${RAW_BASE_URL}/vldb" "${temp_path}" "vldb"
+  install -m 755 "${temp_path}" "${manager_path}"
+  rm -f "${temp_path}"
+  INSTALLED_SCRIPT_VERSION="$(extract_script_version_from_file "${manager_path}" || true)"
+  INSTALLED_SCRIPT_VERSION="${INSTALLED_SCRIPT_VERSION:-${SCRIPT_VERSION}}"
+  write_global_config
+  info "Manager script updated. Re-run the manager to load the new version." "管理脚本已更新，重新运行管理器后即可加载新版本。"
+}
+
+get_installed_service_kinds() {
+  {
+    while IFS= read -r file; do
+      parse_instance_meta "$(basename "${file}" .json)"
+      printf '%s\n' "${PARSED_SERVICE}"
+    done < <(list_config_files)
+
+    for service in vldb-lancedb vldb-duckdb; do
+      if [[ -x "${INSTALL_DIR}/bin/${service}" ]]; then
+        printf '%s\n' "${service}"
+      fi
+    done
+  } | sed '/^$/d' | sort -u
+}
+
+update_applications_to_tag() {
+  local target_tag="$1"
+  local installed_kinds
+  local file
+  local filename
+  local registered_name
+  local running_instances=""
+  local service
+
+  installed_kinds="$(get_installed_service_kinds)"
+  if [[ -z "${installed_kinds}" ]]; then
+    info "No application binaries are installed yet." "当前还没有安装应用二进制文件。"
+    return 0
+  fi
+
+  while IFS= read -r file; do
+    filename="$(basename "${file}" .json)"
+    parse_instance_meta "${filename}"
+    registered_name="$(service_registration_name "${PARSED_SERVICE}" "${PARSED_INSTANCE}" "${file}")"
+    if service_running_by_name "${registered_name}"; then
+      running_instances+="${PARSED_SERVICE}|${PARSED_INSTANCE}"$'\n'
+    fi
+  done < <(list_config_files)
+
+  stop_all_instances
+
+  while IFS= read -r service; do
+    [[ -n "${service}" ]] || continue
+    install_service_binary "${service}" "${target_tag}"
+  done <<< "${installed_kinds}"
+
+  while IFS= read -r service; do
+    [[ -n "${service}" ]] || continue
+    start_instance_service "${service%%|*}" "${service#*|}"
+  done <<< "${running_instances}"
+
+  INSTALL_TAG="${target_tag}"
+  write_global_config
+  info "Application binaries updated to ${target_tag}." "应用二进制文件已更新到 ${target_tag}。"
 }
 
 remove_profile_exports() {
@@ -1104,7 +1848,7 @@ uninstall_all() {
   rmdir "${GLOBAL_HOME}" >/dev/null 2>&1 || true
   line "VulcanLocalDB program files have been removed." "VulcanLocalDB 程序文件已移除。"
   line "Database directories were preserved." "数据库目录已保留。"
-  exit 0
+  return 0
 }
 
 show_menu() {
@@ -1115,12 +1859,15 @@ show_menu() {
   printf '%s\n' "$(say "1. Switch language" "1. 切换语言")"
   printf '%s\n' "$(say "2. Check for updates" "2. 检查更新")"
   printf '%s\n' "$(say "3. Show installed instances" "3. 查看已安装实例")"
-  printf '%s\n' "$(say "4. Modify host, port or data path" "4. 修改 IP、端口或数据路径")"
+  printf '%s\n' "$(say "4. Modify host, port, data path or service name" "4. 修改 IP、端口、数据路径或服务名")"
   printf '%s\n' "$(say "5. Install a single service instance" "5. 单独安装一个服务实例")"
-  printf '%s\n' "$(say "6. Uninstall a single service instance" "6. 单独卸载一个服务实例")"
-  printf '%s\n' "$(say "7. Register or unregister a service instance" "7. 注册或取消注册一个服务实例")"
-  printf '%s\n' "$(say "8. Remove only the vldb manager command" "8. 仅卸载 vldb 管理命令")"
-  printf '%s\n' "$(say "9. Uninstall everything" "9. 卸载全部")"
+  printf '%s\n' "$(say "6. Start a single service instance" "6. 启动单个服务实例")"
+  printf '%s\n' "$(say "7. Stop a single service instance" "7. 停止单个服务实例")"
+  printf '%s\n' "$(say "8. Start all service instances" "8. 启动全部服务实例")"
+  printf '%s\n' "$(say "9. Stop all service instances" "9. 停止全部服务实例")"
+  printf '%s\n' "$(say "10. Uninstall a single service instance" "10. 单独卸载一个服务实例")"
+  printf '%s\n' "$(say "11. Remove only the vldb manager command" "11. 仅卸载 vldb 管理命令")"
+  printf '%s\n' "$(say "12. Uninstall everything" "12. 卸载全部")"
   printf '%s\n' "$(say "0. Exit" "0. 退出")"
 }
 
@@ -1129,10 +1876,16 @@ main() {
 
   resolve_install_dir
   load_language
+  INSTALLED_SCRIPT_VERSION="${SCRIPT_VERSION}"
   write_global_config
 
-  if [[ "${FROM_INSTALLER}" -eq 1 ]]; then
-    line "Installer detected an existing installation. Running an update check first." "安装器检测到已有安装，先执行更新检查。"
+  if ! is_initialized; then
+    if [[ "${FROM_INSTALLER}" -eq 1 ]]; then
+      info "Manager installation completed. Starting the first-time setup now." "管理器安装完成，正在进入首次安装流程。"
+    fi
+    initialize_installation
+  elif [[ "${FROM_INSTALLER}" -eq 1 ]]; then
+    info "Installer detected an existing installation. Running an update check first." "安装器检测到已有安装，先执行更新检查。"
     check_updates
   fi
 
@@ -1140,15 +1893,18 @@ main() {
     show_menu
     read -r -p "$(say "Select an action: " "请选择操作：")" choice
     case "${choice}" in
-      1) switch_language ;;
-      2) check_updates ;;
-      3) print_status ;;
-      4) configure_instance ;;
-      5) install_single_instance ;;
-      6) uninstall_single_instance ;;
-      7) toggle_service_registration ;;
-      8) uninstall_launcher_only ;;
-      9) uninstall_all ;;
+      1) invoke_menu_action "Switching language" "切换语言" switch_language ;;
+      2) invoke_menu_action "Checking for updates" "检查更新" check_updates ;;
+      3) invoke_menu_action "Showing installed instances" "查看已安装实例" show_instances ;;
+      4) invoke_menu_action "Configuring an instance" "修改实例配置" configure_instance ;;
+      5) invoke_menu_action "Installing a single service instance" "安装单个服务实例" install_single_instance ;;
+      6) invoke_menu_action "Starting a single service instance" "启动单个服务实例" start_single_instance ;;
+      7) invoke_menu_action "Stopping a single service instance" "停止单个服务实例" stop_single_instance ;;
+      8) invoke_menu_action "Starting all service instances" "启动全部服务实例" start_all_instances ;;
+      9) invoke_menu_action "Stopping all service instances" "停止全部服务实例" stop_all_instances ;;
+      10) invoke_menu_action "Uninstalling a single service instance" "卸载单个服务实例" uninstall_single_instance ;;
+      11) invoke_menu_action "Removing the manager command" "移除管理命令" uninstall_launcher_only ;;
+      12) invoke_menu_action "Uninstalling everything" "卸载全部" uninstall_all; exit 0 ;;
       0) exit 0 ;;
       *) line "Invalid selection." "选择无效。" ;;
     esac

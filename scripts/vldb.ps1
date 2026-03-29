@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.8"
+$ScriptVersion = "0.1.9"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -662,11 +662,13 @@ function Choose-Service {
     while ($true) {
         Write-Host "1. LanceDB"
         Write-Host "2. DuckDB"
-        $choice = Read-Host "Choose service [1/2]"
+        Write-Host "0. Back"
+        $choice = Read-Host "Choose service [1/2/0]"
         switch ($choice) {
             "1" { return "vldb-lancedb" }
             "2" { return "vldb-duckdb" }
-            default { Write-Info "Please input 1 or 2." }
+            "0" { return $null }
+            default { Write-Info "Please input 1, 2, or 0." }
         }
     }
 }
@@ -681,16 +683,20 @@ function Choose-InstanceFile {
     for ($index = 0; $index -lt $files.Count; $index++) {
         Write-Host ("{0}. {1}" -f ($index + 1), $files[$index].BaseName)
     }
+    Write-Host "0. Back"
 
     while ($true) {
         $choice = Read-Host "Select instance"
+        if ($choice -eq "0") {
+            return $null
+        }
         if ($choice -match '^\d+$') {
             $selected = [int]$choice - 1
             if ($selected -ge 0 -and $selected -lt $files.Count) {
                 return $files[$selected]
             }
         }
-        Write-Info "Invalid selection."
+        Write-Info "Invalid selection. Please choose a listed number or 0."
     }
 }
 
@@ -1309,6 +1315,7 @@ function Configure-Instance {
 
 function Install-SingleInstance {
     $service = Choose-Service
+    if (-not $service) { return }
     Ensure-ServiceBinaryInstalled -Service $service
 
     while ($true) {
