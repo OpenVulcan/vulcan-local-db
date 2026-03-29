@@ -52,12 +52,12 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: macos-13
+            runner: macos-15-intel
             runner_mode: fixed
             target: x86_64-apple-darwin
           - service: vldb-lancedb
             binary: vldb-lancedb
-            runner: macos-14
+            runner: macos-15
             runner_mode: fixed
             target: aarch64-apple-darwin
           - service: vldb-lancedb
@@ -77,12 +77,12 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: macos-13
+            runner: macos-15-intel
             runner_mode: fixed
             target: x86_64-apple-darwin
           - service: vldb-duckdb
             binary: vldb-duckdb
-            runner: macos-14
+            runner: macos-15
             runner_mode: fixed
             target: aarch64-apple-darwin
           - service: vldb-duckdb
