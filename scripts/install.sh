@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.11"
+SCRIPT_VERSION="0.1.12"
 REPO_SLUG="OpenVulcan/vulcan-local-db"
 REPO_URL="https://github.com/OpenVulcan/vulcan-local-db"
 RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts"
@@ -56,6 +56,17 @@ read_prompt_value() {
     IFS= read -r -u 3 "${__resultvar}" || return 1
   else
     IFS= read -r -p "${prompt}" "${__resultvar}" || return 1
+  fi
+}
+
+terminal_line() {
+  local message="$1"
+
+  initialize_prompt_input
+  if [[ "${PROMPT_INPUT_FD}" == "3" ]]; then
+    printf '%s\n' "${message}" >&3
+  else
+    printf '%s\n' "${message}" >&2
   fi
 }
 
@@ -679,6 +690,32 @@ install_manager_script() {
   CONTROLLER_SCRIPT_VERSION="${CONTROLLER_SCRIPT_VERSION:-${SCRIPT_VERSION}}"
 }
 
+global_launcher_path() {
+  case "$(uname -s)" in
+    Linux|Darwin)
+      if [[ "$(id -u)" -eq 0 ]]; then
+        printf '%s' "/usr/local/bin/vldb"
+      else
+        printf '%s' "${HOME}/.local/bin/vldb"
+      fi
+      ;;
+    *)
+      printf '%s' "${INSTALL_DIR}/bin/vldb"
+      ;;
+  esac
+}
+
+install_global_launcher() {
+  local launcher_path
+  local launcher_dir
+
+  launcher_path="$(global_launcher_path)"
+  launcher_dir="$(dirname "${launcher_path}")"
+
+  mkdir -p "${launcher_dir}"
+  ln -sfn "${INSTALL_DIR}/bin/vldb" "${launcher_path}"
+}
+
 ensure_profile_exports() {
   local profile_file
   local marker_begin="# VulcanLocalDB begin"
@@ -865,10 +902,12 @@ main() {
 
   choose_install_dir
   install_manager_script
+  install_global_launcher
   write_global_config
   ensure_profile_exports
   line "Manager script installation completed." "管理脚本安装完成。"
   line "Manager command: ${INSTALL_DIR}/bin/vldb" "管理命令：${INSTALL_DIR}/bin/vldb"
+  line "Global command: $(global_launcher_path)" "全局命令：$(global_launcher_path)"
   line "Launching the manager to continue installation." "正在启动管理器继续完成安装。"
   exec "${INSTALL_DIR}/bin/vldb" --from-installer
 }
