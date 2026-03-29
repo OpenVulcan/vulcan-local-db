@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.2"
+SCRIPT_VERSION="0.1.4"
 REPO_SLUG="OpenVulcan/vulcan-local-db"
 REPO_URL="https://github.com/OpenVulcan/vulcan-local-db"
 RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts"
@@ -294,6 +294,32 @@ default_install_dir() {
       fi
       ;;
   esac
+}
+
+get_existing_install_dir() {
+  local candidate=""
+  local config_dir=""
+
+  if [[ -f "${GLOBAL_CONFIG}" ]]; then
+    config_dir="$(sed -nE 's/.*"install_dir":[[:space:]]*"([^"]+)".*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
+    if [[ -n "${config_dir}" && -x "${config_dir}/bin/vldg" ]]; then
+      printf '%s' "${config_dir}"
+      return 0
+    fi
+  fi
+
+  if [[ -n "${VULCANLOCALDB_HOME:-}" && -x "${VULCANLOCALDB_HOME}/bin/vldg" ]]; then
+    printf '%s' "${VULCANLOCALDB_HOME}"
+    return 0
+  fi
+
+  candidate="$(default_install_dir)"
+  if [[ -x "${candidate}/bin/vldg" ]]; then
+    printf '%s' "${candidate}"
+    return 0
+  fi
+
+  return 1
 }
 
 is_valid_install_dir() {
@@ -641,6 +667,21 @@ write_global_config() {
   "release_tag": "${INSTALL_TAG}",
   "script_version": "${CONTROLLER_SCRIPT_VERSION}"
 }
+
+invoke_installed_controller_if_present() {
+  local existing_install_dir=""
+  local controller_path=""
+
+  existing_install_dir="$(get_existing_install_dir || true)"
+  [[ -n "${existing_install_dir}" ]] || return 1
+
+  controller_path="${existing_install_dir}/bin/vldg"
+  [[ -x "${controller_path}" ]] || return 1
+
+  line "An existing VulcanLocalDB installation was detected at ${existing_install_dir}." "检测到已有 VulcanLocalDB 安装：${existing_install_dir}。"
+  line "Launching the local controller script so it can check for updates." "正在启动本地管理脚本，并先检查更新。"
+  exec "${controller_path}" --from-installer
+}
 EOF
 }
 
@@ -680,10 +721,18 @@ ensure_profile_exports() {
     cat >>"${profile_file}" <<EOF
 ${marker_begin}
 export VULCANLOCALDB_HOME="${INSTALL_DIR}"
+export VULCANLOCALDB_BIN="${INSTALL_DIR}/bin"
 export PATH="${INSTALL_DIR}/bin:\$PATH"
 ${marker_end}
 EOF
   fi
+
+  export VULCANLOCALDB_HOME="${INSTALL_DIR}"
+  export VULCANLOCALDB_BIN="${INSTALL_DIR}/bin"
+  case ":${PATH}:" in
+    *":${INSTALL_DIR}/bin:"*) ;;
+    *) export PATH="${INSTALL_DIR}/bin:${PATH}" ;;
+  esac
 }
 
 write_runner_script() {
@@ -858,6 +907,11 @@ main() {
   ensure_command tar
   choose_language
   show_update_notice
+
+  if invoke_installed_controller_if_present; then
+    return 0
+  fi
+
   choose_install_mode
   choose_install_dir
   if [[ "${INSTALL_MODE}" == "full" ]]; then

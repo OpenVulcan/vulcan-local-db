@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.3"
+$ScriptVersion = "0.1.4"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -104,6 +104,35 @@ function Get-DefaultInstallDir {
         return (Join-Path $env:LOCALAPPDATA "VulcanLocalDB")
     }
     return (Join-Path $HOME "AppData\Roaming\VulcanLocalDB")
+}
+
+function Get-ExistingInstallDir {
+    $candidates = @()
+
+    if (Test-Path $script:GlobalConfig) {
+        try {
+            $config = Get-Content $script:GlobalConfig -Raw | ConvertFrom-Json
+            if ($config.install_dir) {
+                $candidates += [string]$config.install_dir
+            }
+        } catch {
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:VULCANLOCALDB_HOME)) {
+        $candidates += $env:VULCANLOCALDB_HOME
+    }
+
+    $candidates += (Get-DefaultInstallDir)
+
+    foreach ($candidate in ($candidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)) {
+        $controllerPath = Join-Path $candidate "bin\vldg.ps1"
+        if (Test-Path $controllerPath) {
+            return [System.IO.Path]::GetFullPath($candidate)
+        }
+    }
+
+    return $null
 }
 
 function Test-ValidInstallDir {
@@ -276,6 +305,49 @@ function Download-FileWithProgress {
     Write-Info "Finished downloading $Label$sizeText"
 }
 
+function Refresh-CurrentSessionEnvironment {
+    $combinedPath = @()
+
+    foreach ($scope in @("Machine", "User")) {
+        $scopePath = [Environment]::GetEnvironmentVariable("Path", $scope)
+        if ($scopePath) {
+            foreach ($entry in ($scopePath.Split(";") | Where-Object { $_ })) {
+                if ($combinedPath -notcontains $entry) {
+                    $combinedPath += $entry
+                }
+            }
+        }
+    }
+
+    $env:Path = ($combinedPath -join ";")
+
+    foreach ($name in @("VULCANLOCALDB_HOME", "VULCANLOCALDB_BIN")) {
+        $value = [Environment]::GetEnvironmentVariable($name, "User")
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            Remove-Item ("Env:" + $name) -ErrorAction SilentlyContinue
+        } else {
+            Set-Item ("Env:" + $name) $value
+        }
+    }
+}
+
+function Invoke-InstalledControllerIfPresent {
+    $existingInstallDir = Get-ExistingInstallDir
+    if (-not $existingInstallDir) {
+        return $false
+    }
+
+    $controllerPath = Join-Path $existingInstallDir "bin\vldg.ps1"
+    if (-not (Test-Path $controllerPath)) {
+        return $false
+    }
+
+    Write-Info "An existing VulcanLocalDB installation was detected at $existingInstallDir."
+    Write-Info "Launching the local controller script so it can check for updates."
+    & $controllerPath -FromInstaller
+    return $true
+}
+
 function Get-TargetTriple {
     $arch = $env:PROCESSOR_ARCHITECTURE
     switch ($arch) {
@@ -445,11 +517,8 @@ function Ensure-PathExports {
 
     [Environment]::SetEnvironmentVariable("VULCANLOCALDB_HOME", $script:InstallDir, "User")
     [Environment]::SetEnvironmentVariable("VULCANLOCALDB_BIN", $binDir, "User")
-    $env:VULCANLOCALDB_HOME = $script:InstallDir
-    $env:VULCANLOCALDB_BIN = $binDir
-    if (($env:Path -split ";") -notcontains $binDir) {
-        $env:Path = $binDir + ";" + $env:Path
-    }
+    Refresh-CurrentSessionEnvironment
+    Write-Info "Current shell environment refreshed."
 }
 
 function Get-ServiceName {
@@ -605,6 +674,11 @@ function Main {
     try {
         Show-Banner
         Show-UpdateNotice
+
+        if (Invoke-InstalledControllerIfPresent) {
+            return
+        }
+
         Choose-InstallMode
         Choose-InstallDir
 

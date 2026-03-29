@@ -1,6 +1,10 @@
+param(
+    [switch]$FromInstaller
+)
+
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.3"
+$ScriptVersion = "0.1.4"
 $GlobalHome = Join-Path $HOME ".vulcan\vldg"
 $GlobalConfig = Join-Path $GlobalHome "config.json"
 $RunDir = Join-Path $GlobalHome "run"
@@ -24,6 +28,41 @@ try {
 function Write-Info {
     param([string]$Message)
     Write-Host $Message
+}
+
+function Refresh-CurrentSessionEnvironment {
+    $combinedPath = @()
+
+    foreach ($scope in @("Machine", "User")) {
+        $scopePath = [Environment]::GetEnvironmentVariable("Path", $scope)
+        if ($scopePath) {
+            foreach ($entry in ($scopePath.Split(";") | Where-Object { $_ })) {
+                if ($combinedPath -notcontains $entry) {
+                    $combinedPath += $entry
+                }
+            }
+        }
+    }
+
+    $env:Path = ($combinedPath -join ";")
+
+    foreach ($name in @("VULCANLOCALDB_HOME", "VULCANLOCALDB_BIN")) {
+        $value = [Environment]::GetEnvironmentVariable($name, "User")
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            Remove-Item ("Env:" + $name) -ErrorAction SilentlyContinue
+        } else {
+            Set-Item ("Env:" + $name) $value
+        }
+    }
+}
+
+function Clear-UserEnvironmentValue {
+    param([string]$Name, [string]$ExpectedValue)
+
+    $currentValue = [Environment]::GetEnvironmentVariable($Name, "User")
+    if ($currentValue -and [string]::Equals($currentValue, $ExpectedValue, [System.StringComparison]::OrdinalIgnoreCase)) {
+        [Environment]::SetEnvironmentVariable($Name, $null, "User")
+    }
 }
 
 function Start-DeferredCleanup {
@@ -627,13 +666,9 @@ function Remove-LauncherOnly {
         $updated = ($currentPath.Split(";") | Where-Object { $_ -and $_ -ne $binDir }) -join ";"
     }
     [Environment]::SetEnvironmentVariable("Path", $updated, "User")
-    [Environment]::SetEnvironmentVariable("VULCANLOCALDB_HOME", $null, "User")
-    [Environment]::SetEnvironmentVariable("VULCANLOCALDB_BIN", $null, "User")
-    if ($env:Path) {
-        $env:Path = (($env:Path.Split(";") | Where-Object { $_ -and $_ -ne $binDir }) -join ";")
-    }
-    $env:VULCANLOCALDB_HOME = $null
-    $env:VULCANLOCALDB_BIN = $null
+    Clear-UserEnvironmentValue -Name "VULCANLOCALDB_HOME" -ExpectedValue $script:InstallDir
+    Clear-UserEnvironmentValue -Name "VULCANLOCALDB_BIN" -ExpectedValue $binDir
+    Refresh-CurrentSessionEnvironment
     Remove-Item $launcherFiles -Force -ErrorAction SilentlyContinue
     Start-DeferredCleanup -Paths $launcherFiles
     Write-Info "The vldg launcher has been removed from future sessions. Close this shell after you finish."
@@ -670,6 +705,11 @@ function Show-Menu {
 
 Resolve-InstallDir
 Write-Config
+
+if ($FromInstaller) {
+    Write-Info "Installer detected an existing installation. Running an update check first."
+    Check-Updates
+}
 
 while ($true) {
     Show-Menu

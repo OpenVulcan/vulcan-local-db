@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.2"
+SCRIPT_VERSION="0.1.4"
 GLOBAL_HOME="${HOME}/.vulcan/vldg"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
@@ -15,6 +15,12 @@ INSTALLED_SCRIPT_VERSION="${SCRIPT_VERSION}"
 LATEST_RELEASE_JSON=""
 PARSED_SERVICE=""
 PARSED_INSTANCE=""
+FROM_INSTALLER=0
+
+if [[ "${1:-}" == "--from-installer" ]]; then
+  FROM_INSTALLER=1
+  shift
+fi
 
 say() {
   if [[ "${LANG_CODE}" == "zh-CN" ]]; then
@@ -1032,6 +1038,11 @@ main() {
   resolve_install_dir
   load_language
   write_global_config
+
+  if [[ "${FROM_INSTALLER}" -eq 1 ]]; then
+    line "Installer detected an existing installation. Running an update check first." "安装器检测到已有安装，先执行更新检查。"
+    check_updates
+  fi
 
   while true; do
     show_menu
