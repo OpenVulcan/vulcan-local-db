@@ -13,6 +13,14 @@ $LatestRelease = $null
 $InstalledScriptVersion = $ScriptVersion
 $WinSWVersion = "v2.12.0"
 
+try {
+    [Net.ServicePointManager]::SecurityProtocol = `
+        [Net.SecurityProtocolType]::Tls12 -bor `
+        [Net.SecurityProtocolType]::Tls11 -bor `
+        [Net.SecurityProtocolType]::Tls
+} catch {
+}
+
 function Write-Info {
     param([string]$Message)
     Write-Host $Message
@@ -177,39 +185,8 @@ function Download-FileWithProgress {
         [string]$Label
     )
 
-    $handler = [System.Net.Http.HttpClientHandler]::new()
-    $client = [System.Net.Http.HttpClient]::new($handler)
-
-    try {
-        $response = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
-        $response.EnsureSuccessStatusCode()
-        $contentLength = $response.Content.Headers.ContentLength
-        $input = $response.Content.ReadAsStreamAsync().Result
-        $output = [System.IO.File]::Open($OutFile, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-        $buffer = New-Object byte[] 65536
-        $totalRead = 0L
-        $activity = "Downloading $Label"
-
-        try {
-            while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                $output.Write($buffer, 0, $read)
-                $totalRead += $read
-                if ($contentLength -and $contentLength -gt 0) {
-                    $percent = [int](($totalRead * 100) / $contentLength)
-                    Write-Progress -Activity $activity -Status "$totalRead / $contentLength bytes" -PercentComplete $percent
-                } else {
-                    Write-Progress -Activity $activity -Status "$totalRead bytes"
-                }
-            }
-        } finally {
-            $output.Dispose()
-            $input.Dispose()
-            Write-Progress -Activity $activity -Completed
-        }
-    } finally {
-        $client.Dispose()
-        $handler.Dispose()
-    }
+    Write-Info "Downloading $Label"
+    Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $OutFile
 }
 
 function Get-TargetTriple {
