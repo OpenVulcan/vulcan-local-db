@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.21"
+$ScriptVersion = "0.1.22"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -19,7 +19,9 @@ $LanceDbRoot = Join-Path $GlobalHome "lancedb"
 $DuckDbRoot = Join-Path $GlobalHome "duckdb"
 $WinSWVersion = "v2.12.0"
 $LatestRelease = $null
-$BoxInnerWidth = 110
+$BoxMinWidth = 18
+$BoxMaxWidth = 50
+$CurrentBoxWidth = 50
 
 try {
     [Net.ServicePointManager]::SecurityProtocol = `
@@ -73,7 +75,49 @@ function Write-Done {
 }
 
 function Write-BoxBorder {
-    Write-ColorLine -Message ("+" + ("-" * ($script:BoxInnerWidth + 2)) + "+") -Color Green
+    Write-ColorLine -Message ("+" + ("-" * ($script:CurrentBoxWidth + 2)) + "+") -Color Green
+}
+
+function Set-BoxWidth {
+    param([int]$RequestedWidth = 0)
+
+    $width = if ($RequestedWidth -gt 0) { $RequestedWidth } else { $script:BoxMaxWidth }
+    if ($width -lt $script:BoxMinWidth) {
+        $width = $script:BoxMinWidth
+    }
+    if ($width -gt $script:BoxMaxWidth) {
+        $width = $script:BoxMaxWidth
+    }
+
+    $script:CurrentBoxWidth = $width
+}
+
+function Get-WrappedBoxLines {
+    param([string]$Message)
+
+    $content = if ($null -eq $Message) { "" } else { $Message }
+    $lines = New-Object System.Collections.Generic.List[string]
+    $paragraphs = $content -split "(`r`n|`n|`r)"
+
+    foreach ($paragraph in $paragraphs) {
+        if ($paragraph.Length -eq 0) {
+            $lines.Add("")
+            continue
+        }
+
+        $start = 0
+        while ($start -lt $paragraph.Length) {
+            $length = [Math]::Min($script:CurrentBoxWidth, $paragraph.Length - $start)
+            $lines.Add($paragraph.Substring($start, $length))
+            $start += $length
+        }
+    }
+
+    if ($lines.Count -eq 0) {
+        $lines.Add("")
+    }
+
+    return $lines
 }
 
 function Write-BoxLine {
@@ -82,27 +126,32 @@ function Write-BoxLine {
         [ConsoleColor]$TextColor = [ConsoleColor]::White
     )
 
-    $content = if ($null -eq $Message) { "" } else { $Message }
-    if ($content.Length -lt $script:BoxInnerWidth) {
-        $content = $content.PadRight($script:BoxInnerWidth)
-    }
+    foreach ($line in Get-WrappedBoxLines -Message $Message) {
+        $content = if ($line.Length -lt $script:CurrentBoxWidth) {
+            $line.PadRight($script:CurrentBoxWidth)
+        } else {
+            $line
+        }
 
-    try {
-        Write-Host "| " -ForegroundColor Green -NoNewline
-        Write-Host $content -ForegroundColor $TextColor -NoNewline
-        Write-Host " |" -ForegroundColor Green
-    } catch {
-        Write-Host ("| {0} |" -f $content)
+        try {
+            Write-Host "| " -ForegroundColor Green -NoNewline
+            Write-Host $content -ForegroundColor $TextColor -NoNewline
+            Write-Host " |" -ForegroundColor Green
+        } catch {
+            Write-Host ("| {0} |" -f $content)
+        }
     }
 }
 
 function Write-Panel {
     param(
         [string]$Title,
+        [int]$Width = 0,
         [ConsoleColor]$BorderColor = [ConsoleColor]::Green,
         [ConsoleColor]$TitleColor = [ConsoleColor]::Green
     )
 
+    Set-BoxWidth -RequestedWidth $Width
     Write-Host ""
     Write-BoxBorder
     Write-BoxLine -Message $Title -TextColor $TitleColor
@@ -110,7 +159,7 @@ function Write-Panel {
 }
 
 function Write-MenuSeparator {
-    Write-BoxLine -Message ("-" * $script:BoxInnerWidth) -TextColor Green
+    Write-BoxLine -Message ("-" * $script:CurrentBoxWidth) -TextColor Green
 }
 
 function Invoke-MenuAction {
@@ -119,7 +168,7 @@ function Invoke-MenuAction {
         [scriptblock]$Action
     )
 
-    Write-Panel -Title $Label
+    Write-Panel -Title $Label -Width 38
     Write-Running $Label
     try {
         & $Action
@@ -740,7 +789,7 @@ function Is-Initialized {
 }
 
 function Choose-Service {
-    Write-Panel -Title "Service Selection"
+    Write-Panel -Title "Service Selection" -Width 28
     Write-BoxLine -Message "0. Back"
     Write-MenuSeparator
     Write-BoxLine -Message "1. LanceDB"
@@ -764,7 +813,7 @@ function Choose-InstanceFile {
         return $null
     }
 
-    Write-Panel -Title "Installed Instances"
+    Write-Panel -Title "Installed Instances" -Width 50
     Write-BoxLine -Message "0. Back"
     Write-MenuSeparator
     for ($index = 0; $index -lt $files.Count; $index++) {
@@ -1234,7 +1283,7 @@ function Show-Instances {
         return
     }
 
-    Write-Panel -Title "Installed Instances"
+    Write-Panel -Title "Installed Instances" -Width 50
     foreach ($file in $files) {
         $meta = Get-InstanceMeta $file
         $config = Read-InstanceConfig $file.FullName
@@ -1801,7 +1850,7 @@ function Uninstall-All {
 }
 
 function Show-Menu {
-    Write-Panel -Title "VulcanLocalDB Manager Script"
+    Write-Panel -Title "VulcanLocalDB Manager Script" -Width 50
     Write-BoxLine -Message "0. Exit"
     Write-MenuSeparator
     Write-BoxLine -Message "1. Check for updates"
