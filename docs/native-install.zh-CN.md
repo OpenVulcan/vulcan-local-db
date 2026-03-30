@@ -30,8 +30,8 @@
 
 例如：
 
-- `vldb-lancedb-v0.1.0-x86_64-unknown-linux-gnu.tar.gz`
-- `vldb-duckdb-v0.1.0-x86_64-pc-windows-msvc.zip`
+- `vldb-lancedb-v0.1.1-x86_64-unknown-linux-gnu.tar.gz`
+- `vldb-duckdb-v0.1.1-x86_64-pc-windows-msvc.zip`
 
 ## 压缩包内容
 
@@ -49,15 +49,15 @@
 Linux 或 macOS：
 
 ```bash
-tar -xzf vldb-lancedb-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-tar -xzf vldb-duckdb-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf vldb-lancedb-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf vldb-duckdb-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
 ```
 
 Windows PowerShell：
 
 ```powershell
-Expand-Archive .\vldb-lancedb-v0.1.0-x86_64-pc-windows-msvc.zip -DestinationPath .\vldb-lancedb
-Expand-Archive .\vldb-duckdb-v0.1.0-x86_64-pc-windows-msvc.zip -DestinationPath .\vldb-duckdb
+Expand-Archive .\vldb-lancedb-v0.1.1-x86_64-pc-windows-msvc.zip -DestinationPath .\vldb-lancedb
+Expand-Archive .\vldb-duckdb-v0.1.1-x86_64-pc-windows-msvc.zip -DestinationPath .\vldb-duckdb
 ```
 
 ### 2. 准备配置文件
