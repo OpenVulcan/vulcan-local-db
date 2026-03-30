@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.18"
+SCRIPT_VERSION="0.1.19"
 GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
@@ -74,6 +74,15 @@ terminal_line() {
   else
     printf '%s\n' "${message}" >&2
   fi
+}
+
+show_panel() {
+  local title="$1"
+
+  terminal_line ""
+  terminal_line "===================================="
+  terminal_line "${title}"
+  terminal_line "===================================="
 }
 
 global_launcher_path() {
@@ -176,7 +185,11 @@ invoke_menu_action() {
   shift 3
 
   running "${label_en}" "${label_zh}"
-  if "${action_name}" "$@"; then
+  set +e
+  "${action_name}" "$@"
+  local action_status=$?
+  set -e
+  if [[ "${action_status}" -eq 0 ]]; then
     completed_action "${label_en}" "${label_zh}"
   else
     warn "${label_en} failed." "${label_zh}失败。"
@@ -465,13 +478,13 @@ ensure_command() {
 
   line "Missing required command: ${command_name}" "缺少必需命令：${command_name}"
   if ! confirm_yes_no "Install the missing dependency now?" "现在安装缺少的依赖？" "Y"; then
-    exit 1
+    return 1
   fi
 
   install_packages "${packages[@]}"
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     line "The dependency was not installed successfully: ${command_name}" "依赖安装失败：${command_name}"
-    exit 1
+    return 1
   fi
 }
 
@@ -482,7 +495,7 @@ ensure_checksum_tool() {
 
   line "A SHA-256 verification tool is required." "需要 SHA-256 校验工具。"
   if ! confirm_yes_no "Install the checksum dependency now?" "现在安装校验依赖？" "Y"; then
-    exit 1
+    return 1
   fi
 
   case "$(uname -s)" in
@@ -496,19 +509,52 @@ ensure_checksum_tool() {
 
   if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1 && ! command -v openssl >/dev/null 2>&1; then
     line "No checksum tool is available after installation." "安装后仍然没有可用的校验工具。"
-    exit 1
+    return 1
   fi
 }
 
+ensure_service_manager_available() {
+  case "$(uname -s)" in
+    Linux)
+      if ! command -v systemctl >/dev/null 2>&1; then
+        line "systemd is required to install and manage services on Linux." "Linux 上安装和管理服务需要 systemd。"
+        return 1
+      fi
+
+      if [[ "$(id -u)" -eq 0 ]]; then
+        if ! systemctl list-unit-files >/dev/null 2>&1; then
+          line "systemd is not available on this machine. Service installation cannot continue." "当前机器上的 systemd 不可用，无法继续安装服务。"
+          return 1
+        fi
+      else
+        if ! systemctl --user list-unit-files >/dev/null 2>&1; then
+          line "User systemd services are unavailable. Please enable them or run the installer as root." "当前无法使用用户级 systemd 服务，请启用后再试，或使用 root 安装。"
+          return 1
+        fi
+      fi
+      ;;
+    Darwin)
+      if ! command -v launchctl >/dev/null 2>&1; then
+        line "launchd is not available on this machine. Service installation cannot continue." "当前机器上的 launchd 不可用，无法继续安装服务。"
+        return 1
+      fi
+      ;;
+    *)
+      line "Service registration is not supported on this platform." "当前平台不支持服务注册。"
+      return 1
+      ;;
+  esac
+}
+
 fetch_release_json() {
-  ensure_command curl
+  ensure_command curl || return 1
   if [[ -n "${INSTALL_TAG}" ]]; then
     if LATEST_RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/tags/${INSTALL_TAG}" 2>/dev/null)"; then
       return
     fi
   fi
 
-  LATEST_RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/latest")"
+  LATEST_RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/latest")" || return 1
   INSTALL_TAG="$(printf '%s\n' "${LATEST_RELEASE_JSON}" | sed -nE 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
 }
 
@@ -550,28 +596,37 @@ download_with_progress() {
   local output_path="$2"
   local label="$3"
 
-  ensure_command curl
+  ensure_command curl || return 1
   line "Downloading ${label}" "正在下载 ${label}"
-  curl --fail --location --retry 3 --retry-delay 2 --progress-bar --output "${output_path}" "${url}"
+  curl --fail --location --retry 3 --retry-delay 2 --progress-bar --output "${output_path}" "${url}" || return 1
 }
 
 verify_checksum() {
   local archive_path="$1"
   local checksum_path="$2"
 
-  ensure_checksum_tool
+  ensure_checksum_tool || return 1
   if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$(dirname "${archive_path}")" && sha256sum -c "$(basename "${checksum_path}")")
+    (cd "$(dirname "${archive_path}")" && sha256sum -c "$(basename "${checksum_path}")") || {
+      line "Checksum verification failed." "校验失败。"
+      return 1
+    }
   elif command -v shasum >/dev/null 2>&1; then
-    (cd "$(dirname "${archive_path}")" && shasum -a 256 -c "$(basename "${checksum_path}")")
+    (cd "$(dirname "${archive_path}")" && shasum -a 256 -c "$(basename "${checksum_path}")") || {
+      line "Checksum verification failed." "校验失败。"
+      return 1
+    }
   elif command -v openssl >/dev/null 2>&1; then
     local expected actual
     expected="$(awk '{print $1}' "${checksum_path}")"
     actual="$(openssl dgst -sha256 -r "${archive_path}" | awk '{print $1}')"
-    [[ "${expected}" == "${actual}" ]]
+    [[ "${expected}" == "${actual}" ]] || {
+      line "Checksum verification failed." "校验失败。"
+      return 1
+    }
   else
     line "Missing sha256sum/shasum for checksum verification." "缺少 sha256sum 或 shasum，无法校验文件。"
-    exit 1
+    return 1
   fi
 }
 
@@ -588,15 +643,15 @@ download_service_binary() {
   local binary_path
   local example_path
 
-  ensure_command tar tar
+  ensure_command tar tar || return 1
   if ! release_has_asset "${archive_name}"; then
     line "The current release does not provide ${archive_name}." "当前 release 不提供 ${archive_name}。"
-    exit 1
+    return 1
   fi
 
-  download_with_progress "${base_url}/${archive_name}" "${archive_path}" "${archive_name}"
-  download_with_progress "${base_url}/${checksum_name}" "${checksum_path}" "${checksum_name}"
-  verify_checksum "${archive_path}" "${checksum_path}"
+  download_with_progress "${base_url}/${archive_name}" "${archive_path}" "${archive_name}" || return 1
+  download_with_progress "${base_url}/${checksum_name}" "${checksum_path}" "${checksum_name}" || return 1
+  verify_checksum "${archive_path}" "${checksum_path}" || return 1
 
   rm -rf "${extract_dir}"
   mkdir -p "${extract_dir}" "${INSTALL_DIR}/bin" "${INSTALL_DIR}/share/examples"
@@ -606,7 +661,7 @@ download_service_binary() {
   example_path="$(find "${extract_dir}" -type f -name "${service}.json.example" | head -n1 || true)"
   [[ -n "${binary_path}" && -n "${example_path}" ]] || {
     line "The archive layout is missing the expected binary or example config." "压缩包缺少预期的可执行文件或示例配置文件。"
-    exit 1
+    return 1
   }
 
   install -m 755 "${binary_path}" "${INSTALL_DIR}/bin/${service}"
@@ -627,21 +682,35 @@ install_service_binary() {
   local target_tag="${2:-}"
   local target
   local temp_dir
+  local previous_install_tag="${INSTALL_TAG}"
+  local resolved_tag
 
   if [[ -n "${target_tag}" ]]; then
     INSTALL_TAG="${target_tag}"
   fi
 
-  fetch_release_json
+  fetch_release_json || {
+    INSTALL_TAG="${previous_install_tag}"
+    return 1
+  }
+  resolved_tag="${INSTALL_TAG}"
   target="$(detect_target)" || {
     warn "Unsupported operating system or CPU architecture." "不支持当前操作系统或 CPU 架构。"
-    exit 1
+    INSTALL_TAG="${previous_install_tag}"
+    return 1
   }
 
-  temp_dir="$(mktemp -d)"
-  download_service_binary "${service}" "${target}" "${temp_dir}"
+  temp_dir="$(mktemp -d)" || {
+    INSTALL_TAG="${previous_install_tag}"
+    return 1
+  }
+  if ! download_service_binary "${service}" "${target}" "${temp_dir}"; then
+    rm -rf "${temp_dir}"
+    INSTALL_TAG="${previous_install_tag}"
+    return 1
+  fi
   rm -rf "${temp_dir}"
-  INSTALL_TAG="${target_tag:-${INSTALL_TAG}}"
+  INSTALL_TAG="${resolved_tag}"
   write_global_config
 }
 
@@ -1111,23 +1180,27 @@ validate_port() {
     return 1
   }
 
-  if [[ -n "${current_port}" && -n "${current_service_name}" && "${candidate_port}" == "${current_port}" ]]; then
-    return 0
-  fi
-
   conflict_message="$(port_conflict_message "${candidate_port}" "${service}" "${instance}" || true)"
   if [[ -n "${conflict_message}" ]]; then
     printf '%s' "${conflict_message}"
     return 1
   fi
 
-  if test_port_available "${candidate_port}"; then
-    return 0
+  if [[ -n "${current_port}" && -n "${current_service_name}" && "${candidate_port}" == "${current_port}" ]]; then
+    if service_running_by_name "${current_service_name}"; then
+      return 0
+    fi
+
+    if test_port_available "${candidate_port}"; then
+      return 0
+    fi
+
+    printf '%s' "$(say "Port ${candidate_port} is already in use by another service, container, or process. Please choose another port." "端口 ${candidate_port} 已被其他容器、服务或进程占用，请更换端口。")"
+    return 1
   fi
 
-  if [[ -n "${current_port}" && -n "${current_service_name}" && "${candidate_port}" == "${current_port}" ]] && service_running_by_name "${current_service_name}"; then
-    printf '%s' "$(say "Port ${candidate_port} is already in use by the current instance. Stop it first or choose another port." "端口 ${candidate_port} 当前已被本实例占用，请先停止实例或改用其他端口。")"
-    return 1
+  if test_port_available "${candidate_port}"; then
+    return 0
   fi
 
   printf '%s' "$(say "Port ${candidate_port} is already in use by another service, container, or process. Please choose another port." "端口 ${candidate_port} 已被其他容器、服务或进程占用，请更换端口。")"
@@ -1198,6 +1271,7 @@ register_instance() {
   local runner_file
   local registered_name
 
+  ensure_service_manager_available || return 1
   write_runner_script "${service}" "${instance}"
   runner_file="$(runner_path "${service}" "${instance}")"
   registered_name="$(service_registration_name "${service}" "${instance}")"
@@ -1503,6 +1577,7 @@ prompt_for_bind_ip() {
 choose_service() {
   local answer
 
+  show_panel "$(say "Service Selection" "服务选择")"
   terminal_line "$(say "Select a service: 1) LanceDB  2) DuckDB" "选择服务：1) LanceDB  2) DuckDB")"
   terminal_line "$(say "0. Back" "0. 返回")"
   while true; do
@@ -1534,6 +1609,7 @@ choose_instance_file() {
     return 1
   fi
 
+  show_panel "$(say "Installed Instances" "已安装实例")"
   for file in "${files[@]}"; do
     local base
     base="$(basename "${file}" .json)"
@@ -1557,6 +1633,7 @@ choose_instance_file() {
 
 switch_language() {
   local answer
+  show_panel "$(say "Language" "语言切换")"
   terminal_line "1. English"
   terminal_line "2. 简体中文"
   terminal_line "$(say "0. Back" "0. 返回")"
@@ -1585,7 +1662,7 @@ check_updates() {
     if [[ "${cmp}" == "1" ]]; then
       info "Manager script update available." "管理脚本有可用更新。"
       if confirm_yes_no "Update the manager script now?" "现在更新管理脚本？" "Y"; then
-        update_manager_script
+        update_manager_script || return 1
       fi
     else
       line "Manager script is up to date." "管理脚本已是最新。"
@@ -1609,7 +1686,7 @@ check_updates() {
       if [[ "${cmp}" == "1" ]]; then
         info "A newer binary release is available." "发现更新的二进制 release。"
         if confirm_yes_no "Update application binaries now?" "现在更新应用二进制文件？" "Y"; then
-          update_applications_to_tag "${latest_tag}"
+          update_applications_to_tag "${latest_tag}" || return 1
         fi
       else
         line "Binary release is up to date." "二进制 release 已是最新。"
@@ -1633,12 +1710,16 @@ configure_instance() {
   local filename
   local current_service_name
   local was_registered=0
+  local was_running=0
   local service_name
   local data_path_error
   local host_changed=0
   local port_changed=0
   local data_path_changed=0
   local service_name_changed=0
+  local config_path
+  local config_backup
+  local rollback_failed=0
 
   file="$(choose_instance_file)" || return 0
   filename="$(basename "${file}" .json)"
@@ -1654,6 +1735,9 @@ configure_instance() {
   current_service_name="$(service_registration_name "${service}" "${instance}" "${file}")"
   if is_registered "${service}" "${instance}" "${file}"; then
     was_registered=1
+  fi
+  if [[ "${was_registered}" -eq 1 ]] && service_running_by_name "${current_service_name}"; then
+    was_running=1
   fi
 
   while true; do
@@ -1685,28 +1769,101 @@ configure_instance() {
     return 0
   fi
 
-  write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}" "${service_name}" || return 1
+  config_path="$(instance_config_path "${service}" "${instance}")"
+  config_backup="$(mktemp)" || return 1
+  cp "${config_path}" "${config_backup}" || {
+    rm -f "${config_backup}"
+    return 1
+  }
 
   if [[ "${was_registered}" -eq 0 ]]; then
-    register_instance "${service}" "${instance}"
+    if ! write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}" "${service_name}"; then
+      rm -f "${config_backup}"
+      return 1
+    fi
+    if ! register_instance "${service}" "${instance}"; then
+      cp "${config_backup}" "${config_path}" || true
+      rm -f "${config_backup}"
+      return 1
+    fi
+    rm -f "${config_backup}"
     write_global_config
     return 0
   fi
 
   if [[ "${service_name_changed}" -eq 1 ]]; then
-    unregister_instance "${service}" "${instance}" "${current_service_name}"
-    register_instance "${service}" "${instance}"
+    if [[ "${was_running}" -eq 1 ]] && ! stop_instance_service "${service}" "${instance}"; then
+      rm -f "${config_backup}"
+      return 1
+    fi
+
+    if ! write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}" "${service_name}"; then
+      if [[ "${was_running}" -eq 1 ]]; then
+        start_instance_service "${service}" "${instance}" >/dev/null 2>&1 || true
+      fi
+      rm -f "${config_backup}"
+      return 1
+    fi
+
+    if ! unregister_instance "${service}" "${instance}" "${current_service_name}" || ! register_instance "${service}" "${instance}"; then
+      cp "${config_backup}" "${config_path}" >/dev/null 2>&1 || rollback_failed=1
+      if ! register_instance "${service}" "${instance}" >/dev/null 2>&1; then
+        rollback_failed=1
+      elif [[ "${was_running}" -eq 0 ]]; then
+        stop_instance_service "${service}" "${instance}" >/dev/null 2>&1 || true
+      fi
+      rm -f "${config_backup}"
+      if [[ "${rollback_failed}" -eq 1 ]]; then
+        warn "Instance update failed and rollback was incomplete." "实例更新失败，且回滚未完整完成。"
+      fi
+      return 1
+    fi
+
+    rm -f "${config_backup}"
     write_global_config
+    info "Configuration updated and the service registration was refreshed." "配置已更新，服务注册已刷新。"
     return 0
   fi
 
-  if restart_registered_service_if_running "${service}" "${instance}"; then
+  if [[ "${was_running}" -eq 1 ]]; then
+    if ! stop_instance_service "${service}" "${instance}"; then
+      rm -f "${config_backup}"
+      return 1
+    fi
+
+    if ! write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}" "${service_name}"; then
+      cp "${config_backup}" "${config_path}" >/dev/null 2>&1 || true
+      start_instance_service "${service}" "${instance}" >/dev/null 2>&1 || true
+      rm -f "${config_backup}"
+      return 1
+    fi
+
+    if ! start_instance_service "${service}" "${instance}"; then
+      cp "${config_backup}" "${config_path}" >/dev/null 2>&1 || rollback_failed=1
+      if ! start_instance_service "${service}" "${instance}" >/dev/null 2>&1; then
+        rollback_failed=1
+      fi
+      rm -f "${config_backup}"
+      if [[ "${rollback_failed}" -eq 1 ]]; then
+        warn "Instance restart failed and rollback was incomplete." "实例重启失败，且回滚未完整完成。"
+      fi
+      return 1
+    fi
+
+    rm -f "${config_backup}"
+    write_global_config
     info "Configuration updated and the service was restarted." "配置已更新，服务已重启。"
-  else
-    info "Configuration updated. The new settings will apply the next time the service starts." "配置已更新，新设置将在下次启动服务时生效。"
+    return 0
   fi
 
+  if ! write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}" "${service_name}"; then
+    rm -f "${config_backup}"
+    return 1
+  fi
+
+  rm -f "${config_backup}"
   write_global_config
+  info "Configuration updated. The new settings will apply the next time the service starts." "配置已更新，新设置将在下次启动服务时生效。"
 }
 
 prompt_config_value() {
@@ -1729,6 +1886,7 @@ initialize_installation() {
   step "Running initial one-click installation" "正在执行首次一键安装"
   fetch_release_json
   choose_data_roots
+  ensure_service_manager_available || return 1
 
   while true; do
     host="$(prompt_for_bind_ip "Service bind IP" "服务绑定 IP" "127.0.0.1")"
@@ -1751,12 +1909,12 @@ initialize_installation() {
     duckdb_service_name="$(prompt_for_service_name "vldb-duckdb" "default" "$(new_unique_service_name "vldb-duckdb" "default" "${duckdb_service_name}")" "${duckdb_service_name}")"
   done
 
-  install_service_binary "vldb-lancedb" "${INSTALL_TAG}"
-  install_service_binary "vldb-duckdb" "${INSTALL_TAG}"
+  install_service_binary "vldb-lancedb" "${INSTALL_TAG}" || return 1
+  install_service_binary "vldb-duckdb" "${INSTALL_TAG}" || return 1
   write_service_config "vldb-lancedb" "default" "${host}" "${lancedb_port}" "$(default_instance_data_path "vldb-lancedb" "default")" "${lancedb_service_name}" || return 1
   write_service_config "vldb-duckdb" "default" "${host}" "${duckdb_port}" "$(default_instance_data_path "vldb-duckdb" "default")" "${duckdb_service_name}" || return 1
-  register_instance "vldb-lancedb" "default"
-  register_instance "vldb-duckdb" "default"
+  register_instance "vldb-lancedb" "default" || return 1
+  register_instance "vldb-duckdb" "default" || return 1
 
   INITIALIZED=1
   INSTALLED_SCRIPT_VERSION="${SCRIPT_VERSION}"
@@ -1775,7 +1933,8 @@ install_single_instance() {
   local data_path_error
 
   service="$(choose_service)" || return 0
-  ensure_service_binary_installed "${service}"
+  ensure_service_manager_available || return 1
+  ensure_service_binary_installed "${service}" || return 1
   while true; do
     instance="$(prompt_config_value "Instance name" "实例名称" "default")"
     is_valid_instance_name "${instance}" || {
@@ -1807,7 +1966,7 @@ install_single_instance() {
   done
 
   write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}" "${service_name}" || return 1
-  register_instance "${service}" "${instance}"
+  register_instance "${service}" "${instance}" || return 1
   INITIALIZED=1
   write_global_config
 }
@@ -1871,23 +2030,33 @@ stop_single_instance() {
 start_all_instances() {
   local file
   local filename
+  local failed=0
 
   while IFS= read -r file; do
     filename="$(basename "${file}" .json)"
     parse_instance_meta "${filename}"
-    start_instance_service "${PARSED_SERVICE}" "${PARSED_INSTANCE}"
+    if ! start_instance_service "${PARSED_SERVICE}" "${PARSED_INSTANCE}"; then
+      failed=1
+    fi
   done < <(list_config_files)
+
+  return "${failed}"
 }
 
 stop_all_instances() {
   local file
   local filename
+  local failed=0
 
   while IFS= read -r file; do
     filename="$(basename "${file}" .json)"
     parse_instance_meta "${filename}"
-    stop_instance_service "${PARSED_SERVICE}" "${PARSED_INSTANCE}"
+    if ! stop_instance_service "${PARSED_SERVICE}" "${PARSED_INSTANCE}"; then
+      failed=1
+    fi
   done < <(list_config_files)
+
+  return "${failed}"
 }
 
 show_instances() {
@@ -1907,6 +2076,7 @@ show_instances() {
     return 0
   fi
 
+  show_panel "$(say "Installed Instances" "已安装实例")"
   while IFS= read -r file; do
     filename="$(basename "${file}" .json)"
     parse_instance_meta "${filename}"
@@ -1934,9 +2104,15 @@ update_manager_script() {
   local manager_path="${INSTALL_DIR}/bin/vldb"
   local temp_path
 
-  temp_path="$(mktemp)"
-  download_with_progress "${RAW_BASE_URL}/vldb" "${temp_path}" "vldb"
-  install -m 755 "${temp_path}" "${manager_path}"
+  temp_path="$(mktemp)" || return 1
+  download_with_progress "${RAW_BASE_URL}/vldb" "${temp_path}" "vldb" || {
+    rm -f "${temp_path}"
+    return 1
+  }
+  install -m 755 "${temp_path}" "${manager_path}" || {
+    rm -f "${temp_path}"
+    return 1
+  }
   rm -f "${temp_path}"
   INSTALLED_SCRIPT_VERSION="$(extract_script_version_from_file "${manager_path}" || true)"
   INSTALLED_SCRIPT_VERSION="${INSTALLED_SCRIPT_VERSION:-${SCRIPT_VERSION}}"
@@ -1967,6 +2143,7 @@ update_applications_to_tag() {
   local registered_name
   local running_instances=""
   local service
+  local failed=0
 
   installed_kinds="$(get_installed_service_kinds)"
   if [[ -z "${installed_kinds}" ]]; then
@@ -1983,17 +2160,28 @@ update_applications_to_tag() {
     fi
   done < <(list_config_files)
 
-  stop_all_instances
+  if ! stop_all_instances; then
+    failed=1
+  else
+    while IFS= read -r service; do
+      [[ -n "${service}" ]] || continue
+      if ! install_service_binary "${service}" "${target_tag}"; then
+        failed=1
+        break
+      fi
+    done <<< "${installed_kinds}"
+  fi
 
   while IFS= read -r service; do
     [[ -n "${service}" ]] || continue
-    install_service_binary "${service}" "${target_tag}"
-  done <<< "${installed_kinds}"
-
-  while IFS= read -r service; do
-    [[ -n "${service}" ]] || continue
-    start_instance_service "${service%%|*}" "${service#*|}"
+    if ! start_instance_service "${service%%|*}" "${service#*|}"; then
+      failed=1
+    fi
   done <<< "${running_instances}"
+
+  if [[ "${failed}" -ne 0 ]]; then
+    return 1
+  fi
 
   INSTALL_TAG="${target_tag}"
   write_global_config
@@ -2053,23 +2241,20 @@ uninstall_all() {
 }
 
 show_menu() {
-  printf '\n'
-  printf '%s\n' "===================================="
-  printf '%s\n' "VulcanLocalDB Manager Script"
-  printf '%s\n' "===================================="
-  printf '%s\n' "$(say "1. Switch language" "1. 切换语言")"
-  printf '%s\n' "$(say "2. Check for updates" "2. 检查更新")"
-  printf '%s\n' "$(say "3. Show installed instances" "3. 查看已安装实例")"
-  printf '%s\n' "$(say "4. Modify host, port, data path or service name" "4. 修改 IP、端口、数据路径或服务名")"
-  printf '%s\n' "$(say "5. Install a single service instance" "5. 单独安装一个服务实例")"
-  printf '%s\n' "$(say "6. Start a single service instance" "6. 启动单个服务实例")"
-  printf '%s\n' "$(say "7. Stop a single service instance" "7. 停止单个服务实例")"
-  printf '%s\n' "$(say "8. Start all service instances" "8. 启动全部服务实例")"
-  printf '%s\n' "$(say "9. Stop all service instances" "9. 停止全部服务实例")"
-  printf '%s\n' "$(say "10. Uninstall a single service instance" "10. 单独卸载一个服务实例")"
-  printf '%s\n' "$(say "11. Remove only the vldb manager command" "11. 仅卸载 vldb 管理命令")"
-  printf '%s\n' "$(say "12. Uninstall everything" "12. 卸载全部")"
-  printf '%s\n' "$(say "0. Exit" "0. 退出")"
+  show_panel "$(say "VulcanLocalDB Manager Script" "VulcanLocalDB 管理脚本")"
+  terminal_line "$(say "1. Switch language" "1. 切换语言")"
+  terminal_line "$(say "2. Check for updates" "2. 检查更新")"
+  terminal_line "$(say "3. Show installed instances" "3. 查看已安装实例")"
+  terminal_line "$(say "4. Modify host, port, data path or service name" "4. 修改 IP、端口、数据路径或服务名")"
+  terminal_line "$(say "5. Install a single service instance" "5. 单独安装一个服务实例")"
+  terminal_line "$(say "6. Start a single service instance" "6. 启动单个服务实例")"
+  terminal_line "$(say "7. Stop a single service instance" "7. 停止单个服务实例")"
+  terminal_line "$(say "8. Start all service instances" "8. 启动全部服务实例")"
+  terminal_line "$(say "9. Stop all service instances" "9. 停止全部服务实例")"
+  terminal_line "$(say "10. Uninstall a single service instance" "10. 单独卸载一个服务实例")"
+  terminal_line "$(say "11. Remove only the vldb manager command" "11. 仅卸载 vldb 管理命令")"
+  terminal_line "$(say "12. Uninstall everything" "12. 卸载全部")"
+  terminal_line "$(say "0. Exit" "0. 退出")"
 }
 
 main() {

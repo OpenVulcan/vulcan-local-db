@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.18"
+$ScriptVersion = "0.1.19"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -69,6 +69,19 @@ function Write-Running {
 function Write-Done {
     param([string]$Message)
     Write-ColorLine -Message ($Message + " completed.") -Color Green
+}
+
+function Write-Panel {
+    param(
+        [string]$Title,
+        [ConsoleColor]$BorderColor = [ConsoleColor]::DarkCyan,
+        [ConsoleColor]$TitleColor = [ConsoleColor]::Magenta
+    )
+
+    Write-Host ""
+    Write-ColorLine -Message "====================================" -Color $BorderColor
+    Write-ColorLine -Message $Title -Color $TitleColor
+    Write-ColorLine -Message "====================================" -Color $BorderColor
 }
 
 function Invoke-MenuAction {
@@ -654,21 +667,25 @@ function Get-PortValidationError {
     }
 
     $port = [int]$CandidatePort
-    if ($CurrentPort -eq $port -and -not [string]::IsNullOrWhiteSpace($CurrentServiceName)) {
-        return $null
-    }
-
     $conflict = Get-PortConflictMessage -CandidatePort $port -Service $Service -Instance $Instance
     if ($conflict) {
         return $conflict
     }
 
-    if (Test-PortAvailable $port) {
-        return $null
+    if ($CurrentPort -eq $port -and -not [string]::IsNullOrWhiteSpace($CurrentServiceName)) {
+        if (Test-ServiceRunningByName $CurrentServiceName) {
+            return $null
+        }
+
+        if (Test-PortAvailable $port) {
+            return $null
+        }
+
+        return "Port $port is already in use by another service, container, or process. Please choose another port."
     }
 
-    if ($CurrentPort -eq $port -and -not [string]::IsNullOrWhiteSpace($CurrentServiceName) -and (Test-ServiceRunningByName $CurrentServiceName)) {
-        return "Port $port is already in use by the current instance. Stop it first or choose another port."
+    if (Test-PortAvailable $port) {
+        return $null
     }
 
     return "Port $port is already in use by another service, container, or process. Please choose another port."
@@ -693,6 +710,7 @@ function Is-Initialized {
 }
 
 function Choose-Service {
+    Write-Panel -Title "Service Selection" -TitleColor Yellow
     while ($true) {
         Write-Host "1. LanceDB"
         Write-Host "2. DuckDB"
@@ -714,6 +732,7 @@ function Choose-InstanceFile {
         return $null
     }
 
+    Write-Panel -Title "Installed Instances" -TitleColor Yellow
     for ($index = 0; $index -lt $files.Count; $index++) {
         Write-Host ("{0}. {1}" -f ($index + 1), $files[$index].BaseName)
     }
@@ -1181,6 +1200,7 @@ function Show-Instances {
         return
     }
 
+    Write-Panel -Title "Installed Instances" -TitleColor Yellow
     foreach ($file in $files) {
         $meta = Get-InstanceMeta $file
         $config = Read-InstanceConfig $file.FullName
@@ -1314,6 +1334,7 @@ function Initialize-Installation {
     $script:ReleaseTag = [string]$release.tag_name
 
     Choose-DataRoots
+    Ensure-ServiceBuilderInstalled | Out-Null
 
     $bindHost = Prompt-ForBindIp -PromptText "Service bind IP" -DefaultValue "127.0.0.1"
 
@@ -1359,6 +1380,7 @@ function Configure-Instance {
     $currentDataPath = Resolve-NormalizedPath ([string]$config.db_path)
     $currentServiceName = Get-ServiceRegistrationName -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName
     $wasRegistered = Test-Registered -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName
+    $wasRunning = $wasRegistered -and (Test-ServiceRunningByName $currentServiceName)
 
     while ($true) {
         $bindHost = Prompt-ForBindIp -PromptText "Bind IP" -DefaultValue $currentBindHost
@@ -1389,35 +1411,109 @@ function Configure-Instance {
         return
     }
 
-    Write-ServiceConfig -Service $meta.service -Instance $meta.instance -BindHost $bindHost -Port $port -DataPath $dataPath -ServiceName $serviceName
-    Write-Config
+    $configBackupPath = Join-Path ([System.IO.Path]::GetTempPath()) ("vulcanlocaldb-config-" + [guid]::NewGuid().ToString("N") + ".json")
+    Copy-Item $file.FullName $configBackupPath -Force
 
-    if (-not $wasRegistered) {
-        Register-Instance -Service $meta.service -Instance $meta.instance
-        return
-    }
+    try {
+        if (-not $wasRegistered) {
+            try {
+                Write-ServiceConfig -Service $meta.service -Instance $meta.instance -BindHost $bindHost -Port $port -DataPath $dataPath -ServiceName $serviceName
+                Register-Instance -Service $meta.service -Instance $meta.instance
+            } catch {
+                Copy-Item $configBackupPath $file.FullName -Force
+                throw
+            }
 
-    if ($serviceNameChanged) {
-        Unregister-Instance -Service $meta.service -Instance $meta.instance -RegisteredName $currentServiceName
-        Register-Instance -Service $meta.service -Instance $meta.instance
-        return
-    }
+            Write-Config
+            return
+        }
 
-    if (-not (Test-RegisteredByName $currentServiceName)) {
-        Register-Instance -Service $meta.service -Instance $meta.instance
-        return
-    }
+        if ($serviceNameChanged) {
+            try {
+                if ($wasRunning) {
+                    Stop-InstanceService -Service $meta.service -Instance $meta.instance
+                }
 
-    if (Restart-RegisteredServiceByNameIfRunning -ServiceName $currentServiceName) {
-        Write-Info "Configuration updated and the service was restarted."
-    } else {
+                Write-ServiceConfig -Service $meta.service -Instance $meta.instance -BindHost $bindHost -Port $port -DataPath $dataPath -ServiceName $serviceName
+                Unregister-Instance -Service $meta.service -Instance $meta.instance -RegisteredName $currentServiceName
+                Register-Instance -Service $meta.service -Instance $meta.instance
+            } catch {
+                $originalError = $_.Exception.Message
+                $rollbackError = $null
+                try {
+                    Copy-Item $configBackupPath $file.FullName -Force
+                    Register-Instance -Service $meta.service -Instance $meta.instance
+                    if (-not $wasRunning) {
+                        Stop-InstanceService -Service $meta.service -Instance $meta.instance
+                    }
+                } catch {
+                    $rollbackError = $_.Exception.Message
+                }
+
+                if ($rollbackError) {
+                    throw ("{0} Rollback also failed: {1}" -f $originalError, $rollbackError)
+                }
+
+                throw $originalError
+            }
+
+            Write-Config
+            Write-Info "Configuration updated and the service registration was refreshed."
+            return
+        }
+
+        if (-not (Test-RegisteredByName $currentServiceName)) {
+            try {
+                Write-ServiceConfig -Service $meta.service -Instance $meta.instance -BindHost $bindHost -Port $port -DataPath $dataPath -ServiceName $serviceName
+                Register-Instance -Service $meta.service -Instance $meta.instance
+            } catch {
+                Copy-Item $configBackupPath $file.FullName -Force
+                throw
+            }
+
+            Write-Config
+            return
+        }
+
+        if ($wasRunning) {
+            try {
+                Stop-InstanceService -Service $meta.service -Instance $meta.instance
+                Write-ServiceConfig -Service $meta.service -Instance $meta.instance -BindHost $bindHost -Port $port -DataPath $dataPath -ServiceName $serviceName
+                Start-InstanceService -Service $meta.service -Instance $meta.instance
+            } catch {
+                $originalError = $_.Exception.Message
+                $rollbackError = $null
+                try {
+                    Copy-Item $configBackupPath $file.FullName -Force
+                    Start-InstanceService -Service $meta.service -Instance $meta.instance
+                } catch {
+                    $rollbackError = $_.Exception.Message
+                }
+
+                if ($rollbackError) {
+                    throw ("{0} Rollback also failed: {1}" -f $originalError, $rollbackError)
+                }
+
+                throw $originalError
+            }
+
+            Write-Config
+            Write-Info "Configuration updated and the service was restarted."
+            return
+        }
+
+        Write-ServiceConfig -Service $meta.service -Instance $meta.instance -BindHost $bindHost -Port $port -DataPath $dataPath -ServiceName $serviceName
+        Write-Config
         Write-Info "Configuration updated. The new settings will apply the next time the service starts."
+    } finally {
+        Remove-Item $configBackupPath -Force -ErrorAction SilentlyContinue
     }
 }
 
 function Install-SingleInstance {
     $service = Choose-Service
     if (-not $service) { return }
+    Ensure-ServiceBuilderInstalled | Out-Null
     Ensure-ServiceBinaryInstalled -Service $service
 
     while ($true) {
@@ -1540,18 +1636,41 @@ function Update-ApplicationsToTag {
         $runningStates["$($meta.service)|$($meta.instance)"] = [bool](Test-ServiceRunningByName $serviceName)
     }
 
-    Stop-AllInstances
+    $updateError = $null
+    $restartErrors = New-Object System.Collections.Generic.List[string]
 
-    foreach ($service in $installedKinds) {
-        Install-ServiceBinary -Service $service -Tag $TargetTag
+    try {
+        Stop-AllInstances
+
+        foreach ($service in $installedKinds) {
+            Install-ServiceBinary -Service $service -Tag $TargetTag
+        }
+    } catch {
+        $updateError = $_.Exception.Message
+    } finally {
+        foreach ($file in Get-InstanceFiles) {
+            $meta = Get-InstanceMeta $file
+            $key = "$($meta.service)|$($meta.instance)"
+            if ($runningStates.ContainsKey($key) -and $runningStates[$key]) {
+                try {
+                    Start-InstanceService -Service $meta.service -Instance $meta.instance
+                } catch {
+                    $restartErrors.Add($_.Exception.Message)
+                }
+            }
+        }
     }
 
-    foreach ($file in Get-InstanceFiles) {
-        $meta = Get-InstanceMeta $file
-        $key = "$($meta.service)|$($meta.instance)"
-        if ($runningStates.ContainsKey($key) -and $runningStates[$key]) {
-            Start-InstanceService -Service $meta.service -Instance $meta.instance
+    if ($updateError -or $restartErrors.Count -gt 0) {
+        if ($updateError -and $restartErrors.Count -gt 0) {
+            throw ("{0} Restart recovery also failed: {1}" -f $updateError, ($restartErrors -join "; "))
         }
+
+        if ($updateError) {
+            throw $updateError
+        }
+
+        throw ("Restart recovery failed: {0}" -f ($restartErrors -join "; "))
     }
 
     $script:ReleaseTag = $TargetTag
@@ -1647,10 +1766,7 @@ function Uninstall-All {
 }
 
 function Show-Menu {
-    Write-Host ""
-    Write-ColorLine -Message "====================================" -Color DarkCyan
-    Write-ColorLine -Message "VulcanLocalDB Manager Script" -Color Magenta
-    Write-ColorLine -Message "====================================" -Color DarkCyan
+    Write-Panel -Title "VulcanLocalDB Manager Script"
     Write-ColorLine -Message "1. Check for updates" -Color White
     Write-ColorLine -Message "2. Show installed instances" -Color White
     Write-ColorLine -Message "3. Modify host, port, data path or service name" -Color White

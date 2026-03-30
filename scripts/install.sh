@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.18"
+SCRIPT_VERSION="0.1.19"
 REPO_SLUG="OpenVulcan/vulcan-local-db"
 REPO_URL="https://github.com/OpenVulcan/vulcan-local-db"
 RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts"
@@ -70,10 +70,16 @@ terminal_line() {
   fi
 }
 
+show_panel() {
+  local title="$1"
+
+  terminal_line "===================================="
+  terminal_line "${title}"
+  terminal_line "===================================="
+}
+
 show_banner() {
-  printf '%s\n' "===================================="
-  printf '%s\n' "       VulcanLocalDB Setup"
-  printf '%s\n' "===================================="
+  show_panel "VulcanLocalDB Setup"
   line "The installer now installs only the manager." "安装器现在只负责安装管理器。"
 }
 
@@ -514,11 +520,9 @@ show_update_notice() {
 }
 
 choose_language() {
-  printf '%s\n' "===================================="
-  printf '%s\n' "       VulcanLocalDB Setup"
-  printf '%s\n' "===================================="
-  printf '%s\n' "1. English (default)"
-  printf '%s\n' "2. 简体中文"
+  show_panel "VulcanLocalDB Setup"
+  terminal_line "1. English (default)"
+  terminal_line "2. 简体中文"
 
   local answer
   read_prompt_value "Select language / 选择语言 [1]: " answer
@@ -533,7 +537,7 @@ choose_install_dir() {
   local default_dir
   local candidate
 
-  default_dir="$(default_install_dir)"
+  default_dir="$(preferred_install_dir)"
 
   while true; do
     candidate="$(prompt_default "Installation directory" "安装目录" "${default_dir}")"
@@ -638,17 +642,28 @@ verify_checksum() {
 }
 
 write_global_config() {
+  local existing_release_tag=""
+  local existing_lancedb_root=""
+  local existing_duckdb_root=""
+  local existing_initialized=""
+
   step "Writing global installer config" "正在写入全局安装配置"
+  if [[ -f "${GLOBAL_CONFIG}" ]]; then
+    existing_release_tag="$(sed -nE 's/.*"release_tag":[[:space:]]*"([^"]*)".*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
+    existing_lancedb_root="$(sed -nE 's/.*"lancedb_root":[[:space:]]*"([^"]*)".*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
+    existing_duckdb_root="$(sed -nE 's/.*"duckdb_root":[[:space:]]*"([^"]*)".*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
+    existing_initialized="$(sed -nE 's/.*"initialized":[[:space:]]*(true|false).*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
+  fi
   mkdir -p "${GLOBAL_HOME}"
   cat >"${GLOBAL_CONFIG}" <<EOF
 {
   "language": "${LANG_CODE}",
   "install_dir": "${INSTALL_DIR}",
-  "release_tag": "${INSTALL_TAG}",
+  "release_tag": "${INSTALL_TAG:-${existing_release_tag}}",
   "script_version": "${CONTROLLER_SCRIPT_VERSION}",
-  "lancedb_root": "${LANCEDB_ROOT}",
-  "duckdb_root": "${DUCKDB_ROOT}",
-  "initialized": false
+  "lancedb_root": "${existing_lancedb_root:-${LANCEDB_ROOT}}",
+  "duckdb_root": "${existing_duckdb_root:-${DUCKDB_ROOT}}",
+  "initialized": $( [[ "${existing_initialized}" == "true" ]] && printf 'true' || printf 'false' )
 }
 EOF
 }
@@ -665,7 +680,12 @@ invoke_installed_controller_if_present() {
 
   line "An existing VulcanLocalDB installation was detected at ${existing_install_dir}." "检测到已有 VulcanLocalDB 安装：${existing_install_dir}。"
   line "Launching the local manager script so it can check for updates." "正在启动本地管理脚本，并先检查更新。"
-  exec "${controller_path}" --from-installer
+  if "${controller_path}" --from-installer; then
+    return 0
+  fi
+
+  line "The existing manager failed to start. Reinstalling the manager now." "现有管理器启动失败，正在重新安装管理器。"
+  return 1
 }
 
 install_manager_script() {
@@ -703,6 +723,17 @@ global_launcher_path() {
       printf '%s' "${INSTALL_DIR}/bin/vldb"
       ;;
   esac
+}
+
+preferred_install_dir() {
+  local existing_install_dir=""
+
+  existing_install_dir="$(get_existing_install_dir || true)"
+  if [[ -n "${existing_install_dir}" ]]; then
+    printf '%s' "${existing_install_dir}"
+  else
+    default_install_dir
+  fi
 }
 
 install_global_launcher() {

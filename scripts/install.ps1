@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.18"
+$ScriptVersion = "0.1.19"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
 $GlobalHome = Join-Path $HOME ".vulcan\vldb"
@@ -39,10 +39,20 @@ function Write-Step {
     Write-ColorLine -Message ("[Step] " + $Message) -Color Yellow
 }
 
+function Write-Panel {
+    param(
+        [string]$Title,
+        [ConsoleColor]$BorderColor = [ConsoleColor]::DarkCyan,
+        [ConsoleColor]$TitleColor = [ConsoleColor]::Magenta
+    )
+
+    Write-ColorLine -Message "====================================" -Color $BorderColor
+    Write-ColorLine -Message $Title -Color $TitleColor
+    Write-ColorLine -Message "====================================" -Color $BorderColor
+}
+
 function Show-Banner {
-    Write-ColorLine -Message "====================================" -Color DarkCyan
-    Write-ColorLine -Message "       VulcanLocalDB Setup" -Color Magenta
-    Write-ColorLine -Message "====================================" -Color DarkCyan
+    Write-Panel -Title "VulcanLocalDB Setup"
     Write-Info "The installer now installs only the manager."
 }
 
@@ -112,6 +122,15 @@ function Get-DefaultInstallDir {
     return (Join-Path $HOME "AppData\Roaming\VulcanLocalDB")
 }
 
+function Get-PreferredInstallDir {
+    $existingInstallDir = Get-ExistingInstallDir
+    if ($existingInstallDir) {
+        return $existingInstallDir
+    }
+
+    return (Get-DefaultInstallDir)
+}
+
 function Read-Config {
     if (-not (Test-Path $script:GlobalConfig)) {
         return $null
@@ -163,7 +182,7 @@ function Test-ValidInstallDir {
 }
 
 function Choose-InstallDir {
-    $defaultDir = Get-DefaultInstallDir
+    $defaultDir = Get-PreferredInstallDir
 
     while ($true) {
         $candidate = Read-Default "Installation directory" $defaultDir
@@ -371,8 +390,13 @@ function Invoke-InstalledManagerIfPresent {
 
     Write-Info "An existing VulcanLocalDB installation was detected at $existingInstallDir."
     Write-Info "Launching the local manager script."
-    & $managerPath -FromInstaller
-    return $true
+    try {
+        & $managerPath -FromInstaller
+        return $true
+    } catch {
+        Write-Info "The existing manager could not start. Reinstalling the manager now."
+        return $false
+    }
 }
 
 function Launch-InstalledManager {
