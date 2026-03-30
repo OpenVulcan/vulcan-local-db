@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.20"
+$ScriptVersion = "0.1.21"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -19,6 +19,7 @@ $LanceDbRoot = Join-Path $GlobalHome "lancedb"
 $DuckDbRoot = Join-Path $GlobalHome "duckdb"
 $WinSWVersion = "v2.12.0"
 $LatestRelease = $null
+$BoxInnerWidth = 110
 
 try {
     [Net.ServicePointManager]::SecurityProtocol = `
@@ -71,6 +72,30 @@ function Write-Done {
     Write-ColorLine -Message ($Message + " completed.") -Color Green
 }
 
+function Write-BoxBorder {
+    Write-ColorLine -Message ("+" + ("-" * ($script:BoxInnerWidth + 2)) + "+") -Color Green
+}
+
+function Write-BoxLine {
+    param(
+        [string]$Message,
+        [ConsoleColor]$TextColor = [ConsoleColor]::White
+    )
+
+    $content = if ($null -eq $Message) { "" } else { $Message }
+    if ($content.Length -lt $script:BoxInnerWidth) {
+        $content = $content.PadRight($script:BoxInnerWidth)
+    }
+
+    try {
+        Write-Host "| " -ForegroundColor Green -NoNewline
+        Write-Host $content -ForegroundColor $TextColor -NoNewline
+        Write-Host " |" -ForegroundColor Green
+    } catch {
+        Write-Host ("| {0} |" -f $content)
+    }
+}
+
 function Write-Panel {
     param(
         [string]$Title,
@@ -79,13 +104,13 @@ function Write-Panel {
     )
 
     Write-Host ""
-    Write-ColorLine -Message "====================================" -Color $BorderColor
-    Write-ColorLine -Message $Title -Color $TitleColor
-    Write-ColorLine -Message "====================================" -Color $BorderColor
+    Write-BoxBorder
+    Write-BoxLine -Message $Title -TextColor $TitleColor
+    Write-BoxBorder
 }
 
 function Write-MenuSeparator {
-    Write-ColorLine -Message "------------------------------------" -Color Green
+    Write-BoxLine -Message ("-" * $script:BoxInnerWidth) -TextColor Green
 }
 
 function Invoke-MenuAction {
@@ -716,11 +741,12 @@ function Is-Initialized {
 
 function Choose-Service {
     Write-Panel -Title "Service Selection"
+    Write-BoxLine -Message "0. Back"
+    Write-MenuSeparator
+    Write-BoxLine -Message "1. LanceDB"
+    Write-BoxLine -Message "2. DuckDB"
+    Write-BoxBorder
     while ($true) {
-        Write-Host "0. Back"
-        Write-MenuSeparator
-        Write-Host "1. LanceDB"
-        Write-Host "2. DuckDB"
         $choice = Read-Host "Choose service [1/2/0]"
         switch ($choice) {
             "1" { return "vldb-lancedb" }
@@ -739,11 +765,12 @@ function Choose-InstanceFile {
     }
 
     Write-Panel -Title "Installed Instances"
-    Write-Host "0. Back"
+    Write-BoxLine -Message "0. Back"
     Write-MenuSeparator
     for ($index = 0; $index -lt $files.Count; $index++) {
-        Write-Host ("{0}. {1}" -f ($index + 1), $files[$index].BaseName)
+        Write-BoxLine -Message ("{0}. {1}" -f ($index + 1), $files[$index].BaseName)
     }
+    Write-BoxBorder
 
     while ($true) {
         $choice = Read-Host "Select instance"
@@ -1214,8 +1241,9 @@ function Show-Instances {
         $serviceName = Get-ServiceRegistrationName -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName
         $registration = if (Test-Registered -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName) { "registered" } else { "not registered" }
         $runtime = if (Test-ServiceRunningByName $serviceName) { "running" } else { "stopped" }
-        Write-Host ("{0} {1} | {2} | {3}:{4} | {5}/{6} | {7}" -f $meta.service, $meta.instance, $serviceName, $config.host, $config.port, $registration, $runtime, $config.db_path)
+        Write-BoxLine -Message ("{0} {1} | {2} | {3}:{4} | {5}/{6} | {7}" -f $meta.service, $meta.instance, $serviceName, $config.host, $config.port, $registration, $runtime, $config.db_path)
     }
+    Write-BoxBorder
 }
 
 function Choose-DataRoots {
@@ -1774,19 +1802,20 @@ function Uninstall-All {
 
 function Show-Menu {
     Write-Panel -Title "VulcanLocalDB Manager Script"
-    Write-ColorLine -Message "0. Exit" -Color White
+    Write-BoxLine -Message "0. Exit"
     Write-MenuSeparator
-    Write-ColorLine -Message "1. Check for updates" -Color White
-    Write-ColorLine -Message "2. Show installed instances" -Color White
-    Write-ColorLine -Message "3. Modify host, port, data path or service name" -Color White
-    Write-ColorLine -Message "4. Install a single service instance" -Color White
-    Write-ColorLine -Message "5. Start a single service instance" -Color White
-    Write-ColorLine -Message "6. Stop a single service instance" -Color White
-    Write-ColorLine -Message "7. Start all service instances" -Color White
-    Write-ColorLine -Message "8. Stop all service instances" -Color White
-    Write-ColorLine -Message "9. Uninstall a single service instance" -Color White
-    Write-ColorLine -Message "10. Remove only the vldb manager command" -Color White
-    Write-ColorLine -Message "11. Uninstall everything" -Color White
+    Write-BoxLine -Message "1. Check for updates"
+    Write-BoxLine -Message "2. Show installed instances"
+    Write-BoxLine -Message "3. Modify host, port, data path or service name"
+    Write-BoxLine -Message "4. Install a single service instance"
+    Write-BoxLine -Message "5. Start a single service instance"
+    Write-BoxLine -Message "6. Stop a single service instance"
+    Write-BoxLine -Message "7. Start all service instances"
+    Write-BoxLine -Message "8. Stop all service instances"
+    Write-BoxLine -Message "9. Uninstall a single service instance"
+    Write-BoxLine -Message "10. Remove only the vldb manager command"
+    Write-BoxLine -Message "11. Uninstall everything"
+    Write-BoxBorder
 }
 
 Resolve-InstallDir

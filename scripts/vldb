@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.20"
+SCRIPT_VERSION="0.1.21"
 GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
@@ -22,6 +22,7 @@ INITIALIZED=0
 DEFAULT_LANCEDB_PORT="19301"
 DEFAULT_DUCKDB_PORT="19401"
 PROMPT_INPUT_FD=""
+BOX_INNER_WIDTH=110
 
 if [[ "${1:-}" == "--from-installer" ]]; then
   FROM_INSTALLER=1
@@ -74,19 +75,6 @@ terminal_line() {
   else
     printf '%s\n' "${message}" >&2
   fi
-}
-
-show_panel() {
-  local title="$1"
-
-  terminal_line ""
-  write_color_line "32" "===================================="
-  write_color_line "32" "${title}"
-  write_color_line "32" "===================================="
-}
-
-show_menu_separator() {
-  write_color_line "32" "------------------------------------"
 }
 
 global_launcher_path() {
@@ -156,6 +144,111 @@ write_color_line() {
       printf '%s\n' "${message}" >&2
     fi
   fi
+}
+
+repeat_char() {
+  local count="$1"
+  local char="$2"
+  local buffer=""
+
+  if (( count <= 0 )); then
+    return 0
+  fi
+
+  printf -v buffer '%*s' "${count}" ""
+  printf '%s' "${buffer// /${char}}"
+}
+
+display_width() {
+  local text="$1"
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "${text}" <<'PY'
+import sys
+import unicodedata
+
+text = sys.argv[1]
+width = 0
+for char in text:
+    if unicodedata.combining(char):
+        continue
+    width += 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+print(width, end="")
+PY
+    return
+  fi
+
+  if command -v python >/dev/null 2>&1; then
+    python - "${text}" <<'PY'
+import sys
+import unicodedata
+
+text = sys.argv[1]
+width = 0
+for char in text:
+    if unicodedata.combining(char):
+        continue
+    width += 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+print(width, end="")
+PY
+    return
+  fi
+
+  printf '%s' "${#text}"
+}
+
+pad_box_text() {
+  local text="$1"
+  local width
+  local padding
+
+  width="$(display_width "${text}")"
+  if (( width >= BOX_INNER_WIDTH )); then
+    printf '%s' "${text}"
+    return 0
+  fi
+
+  padding=$((BOX_INNER_WIDTH - width))
+  printf '%s' "${text}"
+  printf '%*s' "${padding}" ""
+}
+
+write_box_border() {
+  local border
+
+  border="+$(repeat_char "$((BOX_INNER_WIDTH + 2))" "-")+"
+  write_color_line "32" "${border}"
+}
+
+write_box_line() {
+  local text="$1"
+  local text_color="${2:-37}"
+  local padded_text
+
+  padded_text="$(pad_box_text "${text}")"
+  initialize_prompt_input
+  if supports_color; then
+    if [[ "${PROMPT_INPUT_FD}" == "3" ]]; then
+      printf '\033[32m| \033[0m\033[%sm%s\033[0m\033[32m |\033[0m\n' "${text_color}" "${padded_text}" >&3
+    else
+      printf '\033[32m| \033[0m\033[%sm%s\033[0m\033[32m |\033[0m\n' "${text_color}" "${padded_text}" >&2
+    fi
+  else
+    terminal_line "| ${padded_text} |"
+  fi
+}
+
+show_panel() {
+  local title="$1"
+
+  terminal_line ""
+  write_box_border
+  write_box_line "${title}" "32"
+  write_box_border
+}
+
+show_menu_separator() {
+  write_box_line "$(repeat_char "${BOX_INNER_WIDTH}" "-")" "32"
 }
 
 info() {
@@ -1583,10 +1676,10 @@ choose_service() {
   local answer
 
   show_panel "$(say "Service Selection" "服务选择")"
-  terminal_line "$(say "0. Back" "0. 返回")"
+  write_box_line "$(say "0. Back" "0. 返回")"
   show_menu_separator
-  terminal_line "$(say "1. LanceDB" "1. LanceDB")"
-  terminal_line "$(say "2. DuckDB" "2. DuckDB")"
+  write_box_line "$(say "1. LanceDB" "1. LanceDB")"
+  write_box_line "$(say "2. DuckDB" "2. DuckDB")"
   while true; do
     read_prompt_value "$(say "Choice [1/2/0]: " "输入 [1/2/0]：")" answer
     case "${answer}" in
@@ -1617,12 +1710,12 @@ choose_instance_file() {
   fi
 
   show_panel "$(say "Installed Instances" "已安装实例")"
-  terminal_line "$(say "0. Back" "0. 返回")"
+  write_box_line "$(say "0. Back" "0. 返回")"
   show_menu_separator
   for file in "${files[@]}"; do
     local base
     base="$(basename "${file}" .json)"
-    terminal_line "${index}. ${base}"
+    write_box_line "${index}. ${base}"
     index=$((index + 1))
   done
 
@@ -1642,10 +1735,10 @@ choose_instance_file() {
 switch_language() {
   local answer
   show_panel "$(say "Language" "语言切换")"
-  terminal_line "$(say "0. Back" "0. 返回")"
+  write_box_line "$(say "0. Back" "0. 返回")"
   show_menu_separator
-  terminal_line "1. English"
-  terminal_line "2. 简体中文"
+  write_box_line "1. English"
+  write_box_line "2. 简体中文"
   read_prompt_value "Select language [1/2/0]: " answer
   case "${answer:-1}" in
     0) return 0 ;;
@@ -2105,7 +2198,7 @@ show_instances() {
     else
       runtime="$(say "stopped" "已停止")"
     fi
-    printf '%s %s | %s | %s:%s | %s/%s | %s\n' "$(service_display_name "${service}")" "${instance}" "${registered_name}" "${host}" "${port}" "${registration}" "${runtime}" "${db_path}"
+    write_box_line "$(printf '%s %s | %s | %s:%s | %s/%s | %s' "$(service_display_name "${service}")" "${instance}" "${registered_name}" "${host}" "${port}" "${registration}" "${runtime}" "${db_path}")"
   done < <(list_config_files)
 }
 
@@ -2251,20 +2344,21 @@ uninstall_all() {
 
 show_menu() {
   show_panel "$(say "VulcanLocalDB Manager Script" "VulcanLocalDB 管理脚本")"
-  terminal_line "$(say "0. Exit" "0. 退出")"
+  write_box_line "$(say "0. Exit" "0. 退出")"
   show_menu_separator
-  terminal_line "$(say "1. Switch language" "1. 切换语言")"
-  terminal_line "$(say "2. Check for updates" "2. 检查更新")"
-  terminal_line "$(say "3. Show installed instances" "3. 查看已安装实例")"
-  terminal_line "$(say "4. Modify host, port, data path or service name" "4. 修改 IP、端口、数据路径或服务名")"
-  terminal_line "$(say "5. Install a single service instance" "5. 单独安装一个服务实例")"
-  terminal_line "$(say "6. Start a single service instance" "6. 启动单个服务实例")"
-  terminal_line "$(say "7. Stop a single service instance" "7. 停止单个服务实例")"
-  terminal_line "$(say "8. Start all service instances" "8. 启动全部服务实例")"
-  terminal_line "$(say "9. Stop all service instances" "9. 停止全部服务实例")"
-  terminal_line "$(say "10. Uninstall a single service instance" "10. 单独卸载一个服务实例")"
-  terminal_line "$(say "11. Remove only the vldb manager command" "11. 仅卸载 vldb 管理命令")"
-  terminal_line "$(say "12. Uninstall everything" "12. 卸载全部")"
+  write_box_line "$(say "1. Switch language" "1. 切换语言")"
+  write_box_line "$(say "2. Check for updates" "2. 检查更新")"
+  write_box_line "$(say "3. Show installed instances" "3. 查看已安装实例")"
+  write_box_line "$(say "4. Modify host, port, data path or service name" "4. 修改 IP、端口、数据路径或服务名")"
+  write_box_line "$(say "5. Install a single service instance" "5. 单独安装一个服务实例")"
+  write_box_line "$(say "6. Start a single service instance" "6. 启动单个服务实例")"
+  write_box_line "$(say "7. Stop a single service instance" "7. 停止单个服务实例")"
+  write_box_line "$(say "8. Start all service instances" "8. 启动全部服务实例")"
+  write_box_line "$(say "9. Stop all service instances" "9. 停止全部服务实例")"
+  write_box_line "$(say "10. Uninstall a single service instance" "10. 单独卸载一个服务实例")"
+  write_box_line "$(say "11. Remove only the vldb manager command" "11. 仅卸载 vldb 管理命令")"
+  write_box_line "$(say "12. Uninstall everything" "12. 卸载全部")"
+  write_box_border
 }
 
 main() {
