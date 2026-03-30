@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.16"
+$ScriptVersion = "0.1.17"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"

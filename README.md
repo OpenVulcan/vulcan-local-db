@@ -34,6 +34,33 @@ This repository is designed for scenarios where you want a small local gateway i
 
 ## Quick Install
 
+### Script Installer From GitHub
+
+If you want a guided native installation flow, use the installer scripts published from this repository.
+
+Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh | bash
+```
+
+macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh | bash
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.ps1 | iex
+```
+
+Detailed script install guides:
+
+- English: [docs/script-install.en.md](./docs/script-install.en.md)
+- Chinese: [docs/script-install.zh-CN.md](./docs/script-install.zh-CN.md)
+
 ### Docker Hub
 
 Pull and run the published images directly:
@@ -84,33 +111,6 @@ Detailed binary install guides:
 
 - English: [docs/native-install.en.md](./docs/native-install.en.md)
 - Chinese: [docs/native-install.zh-CN.md](./docs/native-install.zh-CN.md)
-
-### Script Installer From GitHub
-
-If you want a guided native installation flow, use the installer scripts published from this repository.
-
-Linux:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh | bash
-```
-
-macOS:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh | bash
-```
-
-Windows PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.ps1 | iex
-```
-
-Detailed script install guides:
-
-- English: [docs/script-install.en.md](./docs/script-install.en.md)
-- Chinese: [docs/script-install.zh-CN.md](./docs/script-install.zh-CN.md)
 
 ## Developer Setup
 

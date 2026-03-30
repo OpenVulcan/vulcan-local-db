@@ -34,6 +34,33 @@
 
 ## 快速安装
 
+### 直接使用 GitHub 安装脚本
+
+如果你希望通过交互式方式完成本地安装，可以直接从 GitHub 源获取安装脚本。
+
+Linux：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh | bash
+```
+
+macOS：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh | bash
+```
+
+Windows PowerShell：
+
+```powershell
+irm https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.ps1 | iex
+```
+
+详细脚本安装说明：
+
+- 中文：[docs/script-install.zh-CN.md](./docs/script-install.zh-CN.md)
+- English: [docs/script-install.en.md](./docs/script-install.en.md)
+
 ### 直接使用 Docker Hub
 
 如果你想最快速地安装并运行，直接拉取并启动已发布镜像：
@@ -84,33 +111,6 @@ docker run -d \
 
 - 中文：[docs/native-install.zh-CN.md](./docs/native-install.zh-CN.md)
 - English: [docs/native-install.en.md](./docs/native-install.en.md)
-
-### 直接使用 GitHub 安装脚本
-
-如果你希望通过交互式方式完成本地安装，可以直接从 GitHub 源获取安装脚本。
-
-Linux：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh | bash
-```
-
-macOS：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.sh | bash
-```
-
-Windows PowerShell：
-
-```powershell
-irm https://raw.githubusercontent.com/OpenVulcan/vulcan-local-db/main/scripts/install.ps1 | iex
-```
-
-详细脚本安装说明：
-
-- 中文：[docs/script-install.zh-CN.md](./docs/script-install.zh-CN.md)
-- English: [docs/script-install.en.md](./docs/script-install.en.md)
 
 ## 开发者使用
 
