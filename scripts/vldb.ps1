@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.15"
+$ScriptVersion = "0.1.16"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -272,10 +272,10 @@ function Get-DefaultPort {
     param([string]$Service)
 
     if ($Service -eq "vldb-lancedb") {
-        return 27301
+        return 19301
     }
 
-    return 23702
+    return 19401
 }
 
 function Get-LegacyServiceName {

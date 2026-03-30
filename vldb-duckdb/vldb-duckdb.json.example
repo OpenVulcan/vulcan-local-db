@@ -1,6 +1,6 @@
 {
   "host": "0.0.0.0",
-  "port": 23702,
+  "port": 19401,
   "db_path": "./data/duckdb.db",
   "memory_limit": "2GB",
   "threads": 4
