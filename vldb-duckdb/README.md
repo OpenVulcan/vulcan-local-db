@@ -71,6 +71,8 @@ The image uses `docker/vldb-duckdb.json`, whose Docker-specific `db_path` is `/a
 
 - The root `duckdb::Connection` is stored behind `Arc<Mutex<Connection>>`, but each request clones a dedicated DuckDB connection with `try_clone()` so the mutex is only held briefly.
 - All blocking DuckDB work runs inside `tokio::task::spawn_blocking`.
+- If the client sends `grpc-timeout`, the server now logs that deadline and interrupts the running DuckDB query when the deadline expires.
+- Each request now logs request type, remote address, timeout, SQL preview, elapsed time, and final status to help diagnose intermittent timeouts.
 - Arrow IPC bytes are chunked in-process to avoid building the full stream in memory before sending.
 - Small result sets such as `count(*)` can use `QueryJson` instead of Arrow IPC.
 - `memory_limit` and `threads` are applied on startup and again on per-request cloned connections.
