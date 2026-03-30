@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.17"
+SCRIPT_VERSION="0.1.18"
 GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
@@ -699,6 +699,10 @@ normalize_compare_path() {
   printf '%s' "${value}"
 }
 
+resolve_normalized_path() {
+  normalize_compare_path "$1"
+}
+
 paths_overlap() {
   local left right
   left="$(normalize_compare_path "$1")"
@@ -784,8 +788,8 @@ write_service_config() {
     return 1
   fi
 
-  validation_error="$(validate_port "${port}" "${service}" "${instance}" || true)"
-  if [[ -n "${validation_error}" ]]; then
+  if ! is_valid_port "${port}"; then
+    validation_error="$(say "Invalid port. Please enter an integer between 1 and 65535." "端口格式不正确，请输入 1 到 65535 之间的整数。")"
     warn "${validation_error}" "${validation_error}"
     return 1
   fi
@@ -1107,6 +1111,10 @@ validate_port() {
     return 1
   }
 
+  if [[ -n "${current_port}" && -n "${current_service_name}" && "${candidate_port}" == "${current_port}" ]]; then
+    return 0
+  fi
+
   conflict_message="$(port_conflict_message "${candidate_port}" "${service}" "${instance}" || true)"
   if [[ -n "${conflict_message}" ]]; then
     printf '%s' "${conflict_message}"
@@ -1356,6 +1364,24 @@ stop_instance_service() {
   esac
 }
 
+restart_registered_service_if_running() {
+  local service="$1"
+  local instance="$2"
+  local registered_name
+
+  registered_name="$(service_registration_name "${service}" "${instance}")"
+  if ! is_registered "${service}" "${instance}"; then
+    return 1
+  fi
+
+  if ! service_running_by_name "${registered_name}"; then
+    return 1
+  fi
+
+  stop_instance_service "${service}" "${instance}"
+  start_instance_service "${service}" "${instance}"
+}
+
 choose_data_roots() {
   local lance_root duck_root
   local default_lance default_duck
@@ -1601,10 +1627,18 @@ configure_instance() {
   local host
   local port
   local data_path
+  local current_host
+  local current_port
+  local current_data_path
   local filename
   local current_service_name
+  local was_registered=0
   local service_name
   local data_path_error
+  local host_changed=0
+  local port_changed=0
+  local data_path_changed=0
+  local service_name_changed=0
 
   file="$(choose_instance_file)" || return 0
   filename="$(basename "${file}" .json)"
@@ -1614,30 +1648,64 @@ configure_instance() {
   host="$(config_host "${file}")"
   port="$(config_port "${file}")"
   data_path="$(config_db_path "${file}")"
+  current_host="${host}"
+  current_port="${port}"
+  current_data_path="$(resolve_normalized_path "${data_path}")"
   current_service_name="$(service_registration_name "${service}" "${instance}" "${file}")"
+  if is_registered "${service}" "${instance}" "${file}"; then
+    was_registered=1
+  fi
 
   while true; do
     host="$(prompt_for_bind_ip "Bind IP" "绑定 IP" "${host}")"
 
-    port="$(prompt_for_port "Port" "端口" "${port}" "${service}" "${instance}" "${port}" "${current_service_name}")"
+    port="$(prompt_for_port "Port" "端口" "${port}" "${service}" "${instance}" "${current_port}" "${current_service_name}")"
 
     data_path="$(prompt_config_value "Data path" "数据路径" "${data_path}")"
-    data_path_error="$(validate_data_path "${data_path}" "${service}" "${instance}" || true)"
-    if [[ -n "${data_path_error}" ]]; then
-      info "${data_path_error}" "${data_path_error}"
-      continue
+    data_path="$(resolve_normalized_path "${data_path}")"
+    if [[ "${data_path,,}" != "${current_data_path,,}" ]]; then
+      data_path_error="$(validate_data_path "${data_path}" "${service}" "${instance}" || true)"
+      if [[ -n "${data_path_error}" ]]; then
+        info "${data_path_error}" "${data_path_error}"
+        continue
+      fi
     fi
 
     service_name="$(prompt_for_service_name "${service}" "${instance}" "$(new_unique_service_name "${service}" "${instance}" "${current_service_name}" "${current_service_name}")" "${current_service_name}")"
     break
   done
 
-  if is_registered "${service}" "${instance}" "${file}"; then
-    unregister_instance "${service}" "${instance}" "${current_service_name}"
+  [[ "${host,,}" == "${current_host,,}" ]] || host_changed=1
+  [[ "${port}" == "${current_port}" ]] || port_changed=1
+  [[ "${data_path,,}" == "${current_data_path,,}" ]] || data_path_changed=1
+  [[ "${service_name,,}" == "${current_service_name,,}" ]] || service_name_changed=1
+
+  if [[ "${host_changed}" -eq 0 && "${port_changed}" -eq 0 && "${data_path_changed}" -eq 0 && "${service_name_changed}" -eq 0 ]]; then
+    info "No changes detected for this instance." "该实例没有检测到变更。"
+    return 0
   fi
 
   write_service_config "${service}" "${instance}" "${host}" "${port}" "${data_path}" "${service_name}" || return 1
-  register_instance "${service}" "${instance}"
+
+  if [[ "${was_registered}" -eq 0 ]]; then
+    register_instance "${service}" "${instance}"
+    write_global_config
+    return 0
+  fi
+
+  if [[ "${service_name_changed}" -eq 1 ]]; then
+    unregister_instance "${service}" "${instance}" "${current_service_name}"
+    register_instance "${service}" "${instance}"
+    write_global_config
+    return 0
+  fi
+
+  if restart_registered_service_if_running "${service}" "${instance}"; then
+    info "Configuration updated and the service was restarted." "配置已更新，服务已重启。"
+  else
+    info "Configuration updated. The new settings will apply the next time the service starts." "配置已更新，新设置将在下次启动服务时生效。"
+  fi
+
   write_global_config
 }
 

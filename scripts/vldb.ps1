@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.17"
+$ScriptVersion = "0.1.18"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -654,6 +654,10 @@ function Get-PortValidationError {
     }
 
     $port = [int]$CandidatePort
+    if ($CurrentPort -eq $port -and -not [string]::IsNullOrWhiteSpace($CurrentServiceName)) {
+        return $null
+    }
+
     $conflict = Get-PortConflictMessage -CandidatePort $port -Service $Service -Instance $Instance
     if ($conflict) {
         return $conflict
@@ -1051,10 +1055,11 @@ function Register-Instance {
     param([string]$Service, [string]$Instance)
 
     $registeredName = Get-ServiceRegistrationName -Service $Service -Instance $Instance
-    $wrapperExe = Write-ServiceWrapperConfig -Service $Service -Instance $Instance -RegisteredName $registeredName
 
     Remove-LegacyStartupTask -RegisteredName $registeredName
     Remove-WindowsServiceByName -RegisteredName $registeredName
+
+    $wrapperExe = Write-ServiceWrapperConfig -Service $Service -Instance $Instance -RegisteredName $registeredName
 
     & $wrapperExe install
     if ($LASTEXITCODE -ne 0) {
@@ -1106,6 +1111,24 @@ function Stop-InstanceService {
 
     Stop-Service -Name $registeredName -Force -ErrorAction SilentlyContinue
     Wait-ForServiceStatus -ServiceName $registeredName -Status ([System.ServiceProcess.ServiceControllerStatus]::Stopped)
+}
+
+function Restart-RegisteredServiceByNameIfRunning {
+    param([string]$ServiceName)
+
+    if (-not (Test-RegisteredByName $ServiceName)) {
+        return $false
+    }
+
+    if (-not (Test-ServiceRunningByName $ServiceName)) {
+        return $false
+    }
+
+    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+    Wait-ForServiceStatus -ServiceName $ServiceName -Status ([System.ServiceProcess.ServiceControllerStatus]::Stopped)
+    Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    Wait-ForServiceStatus -ServiceName $ServiceName -Status ([System.ServiceProcess.ServiceControllerStatus]::Running)
+    return $true
 }
 
 function Write-ServiceConfig {
@@ -1331,33 +1354,65 @@ function Configure-Instance {
 
     $meta = Get-InstanceMeta $file
     $config = Read-InstanceConfig $file.FullName
+    $currentBindHost = [string]$config.host
+    $currentPort = [int]$config.port
+    $currentDataPath = Resolve-NormalizedPath ([string]$config.db_path)
     $currentServiceName = Get-ServiceRegistrationName -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName
     $wasRegistered = Test-Registered -Service $meta.service -Instance $meta.instance -ConfigPath $file.FullName
 
     while ($true) {
-        $bindHost = Prompt-ForBindIp -PromptText "Bind IP" -DefaultValue ([string]$config.host)
+        $bindHost = Prompt-ForBindIp -PromptText "Bind IP" -DefaultValue $currentBindHost
 
-        $port = Prompt-ForPort -PromptText "Port" -DefaultPort ([int]$config.port) -Service $meta.service -Instance $meta.instance -CurrentPort ([int]$config.port) -CurrentServiceName $currentServiceName
+        $port = Prompt-ForPort -PromptText "Port" -DefaultPort $currentPort -Service $meta.service -Instance $meta.instance -CurrentPort $currentPort -CurrentServiceName $currentServiceName
 
         $dataPathInput = Read-Default "Data path" ([string]$config.db_path)
-        $dataPathError = Get-DataPathValidationError -CandidatePath $dataPathInput -Service $meta.service -Instance $meta.instance
-        if ($dataPathError) {
-            Write-Info $dataPathError
-            continue
+        $dataPath = Resolve-NormalizedPath $dataPathInput
+        if (-not [string]::Equals($currentDataPath, $dataPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $dataPathError = Get-DataPathValidationError -CandidatePath $dataPathInput -Service $meta.service -Instance $meta.instance
+            if ($dataPathError) {
+                Write-Info $dataPathError
+                continue
+            }
         }
 
         $serviceName = Prompt-ForServiceName -Service $meta.service -Instance $meta.instance -DefaultName (New-UniqueServiceName -Service $meta.service -Instance $meta.instance -PreferredName $currentServiceName -CurrentName $currentServiceName) -CurrentName $currentServiceName
-        $dataPath = Resolve-NormalizedPath $dataPathInput
         break
     }
 
-    if ($wasRegistered -and -not [string]::Equals($currentServiceName, $serviceName, [System.StringComparison]::OrdinalIgnoreCase)) {
-        Unregister-Instance -Service $meta.service -Instance $meta.instance -RegisteredName $currentServiceName
+    $bindHostChanged = -not [string]::Equals($currentBindHost, $bindHost, [System.StringComparison]::OrdinalIgnoreCase)
+    $portChanged = $currentPort -ne $port
+    $dataPathChanged = -not [string]::Equals($currentDataPath, $dataPath, [System.StringComparison]::OrdinalIgnoreCase)
+    $serviceNameChanged = -not [string]::Equals($currentServiceName, $serviceName, [System.StringComparison]::OrdinalIgnoreCase)
+
+    if (-not ($bindHostChanged -or $portChanged -or $dataPathChanged -or $serviceNameChanged)) {
+        Write-Info "No changes detected for this instance."
+        return
     }
 
     Write-ServiceConfig -Service $meta.service -Instance $meta.instance -BindHost $bindHost -Port $port -DataPath $dataPath -ServiceName $serviceName
     Write-Config
-    Register-Instance -Service $meta.service -Instance $meta.instance
+
+    if (-not $wasRegistered) {
+        Register-Instance -Service $meta.service -Instance $meta.instance
+        return
+    }
+
+    if ($serviceNameChanged) {
+        Unregister-Instance -Service $meta.service -Instance $meta.instance -RegisteredName $currentServiceName
+        Register-Instance -Service $meta.service -Instance $meta.instance
+        return
+    }
+
+    if (-not (Test-RegisteredByName $currentServiceName)) {
+        Register-Instance -Service $meta.service -Instance $meta.instance
+        return
+    }
+
+    if (Restart-RegisteredServiceByNameIfRunning -ServiceName $currentServiceName) {
+        Write-Info "Configuration updated and the service was restarted."
+    } else {
+        Write-Info "Configuration updated. The new settings will apply the next time the service starts."
+    }
 }
 
 function Install-SingleInstance {
