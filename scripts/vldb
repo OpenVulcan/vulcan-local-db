@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.19"
+SCRIPT_VERSION="0.1.20"
 GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
@@ -80,9 +80,13 @@ show_panel() {
   local title="$1"
 
   terminal_line ""
-  terminal_line "===================================="
-  terminal_line "${title}"
-  terminal_line "===================================="
+  write_color_line "32" "===================================="
+  write_color_line "32" "${title}"
+  write_color_line "32" "===================================="
+}
+
+show_menu_separator() {
+  write_color_line "32" "------------------------------------"
 }
 
 global_launcher_path() {
@@ -184,6 +188,7 @@ invoke_menu_action() {
   local action_name="$3"
   shift 3
 
+  show_panel "$(say "${label_en}" "${label_zh}")"
   running "${label_en}" "${label_zh}"
   set +e
   "${action_name}" "$@"
@@ -1578,8 +1583,10 @@ choose_service() {
   local answer
 
   show_panel "$(say "Service Selection" "服务选择")"
-  terminal_line "$(say "Select a service: 1) LanceDB  2) DuckDB" "选择服务：1) LanceDB  2) DuckDB")"
   terminal_line "$(say "0. Back" "0. 返回")"
+  show_menu_separator
+  terminal_line "$(say "1. LanceDB" "1. LanceDB")"
+  terminal_line "$(say "2. DuckDB" "2. DuckDB")"
   while true; do
     read_prompt_value "$(say "Choice [1/2/0]: " "输入 [1/2/0]：")" answer
     case "${answer}" in
@@ -1610,13 +1617,14 @@ choose_instance_file() {
   fi
 
   show_panel "$(say "Installed Instances" "已安装实例")"
+  terminal_line "$(say "0. Back" "0. 返回")"
+  show_menu_separator
   for file in "${files[@]}"; do
     local base
     base="$(basename "${file}" .json)"
     terminal_line "${index}. ${base}"
     index=$((index + 1))
   done
-  terminal_line "$(say "0. Back" "0. 返回")"
 
   while true; do
     read_prompt_value "$(say "Select instance: " "选择实例：")" answer
@@ -1634,9 +1642,10 @@ choose_instance_file() {
 switch_language() {
   local answer
   show_panel "$(say "Language" "语言切换")"
+  terminal_line "$(say "0. Back" "0. 返回")"
+  show_menu_separator
   terminal_line "1. English"
   terminal_line "2. 简体中文"
-  terminal_line "$(say "0. Back" "0. 返回")"
   read_prompt_value "Select language [1/2/0]: " answer
   case "${answer:-1}" in
     0) return 0 ;;
@@ -2242,6 +2251,8 @@ uninstall_all() {
 
 show_menu() {
   show_panel "$(say "VulcanLocalDB Manager Script" "VulcanLocalDB 管理脚本")"
+  terminal_line "$(say "0. Exit" "0. 退出")"
+  show_menu_separator
   terminal_line "$(say "1. Switch language" "1. 切换语言")"
   terminal_line "$(say "2. Check for updates" "2. 检查更新")"
   terminal_line "$(say "3. Show installed instances" "3. 查看已安装实例")"
@@ -2254,7 +2265,6 @@ show_menu() {
   terminal_line "$(say "10. Uninstall a single service instance" "10. 单独卸载一个服务实例")"
   terminal_line "$(say "11. Remove only the vldb manager command" "11. 仅卸载 vldb 管理命令")"
   terminal_line "$(say "12. Uninstall everything" "12. 卸载全部")"
-  terminal_line "$(say "0. Exit" "0. 退出")"
 }
 
 main() {

@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.19"
+$ScriptVersion = "0.1.20"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -74,8 +74,8 @@ function Write-Done {
 function Write-Panel {
     param(
         [string]$Title,
-        [ConsoleColor]$BorderColor = [ConsoleColor]::DarkCyan,
-        [ConsoleColor]$TitleColor = [ConsoleColor]::Magenta
+        [ConsoleColor]$BorderColor = [ConsoleColor]::Green,
+        [ConsoleColor]$TitleColor = [ConsoleColor]::Green
     )
 
     Write-Host ""
@@ -84,12 +84,17 @@ function Write-Panel {
     Write-ColorLine -Message "====================================" -Color $BorderColor
 }
 
+function Write-MenuSeparator {
+    Write-ColorLine -Message "------------------------------------" -Color Green
+}
+
 function Invoke-MenuAction {
     param(
         [string]$Label,
         [scriptblock]$Action
     )
 
+    Write-Panel -Title $Label
     Write-Running $Label
     try {
         & $Action
@@ -710,11 +715,12 @@ function Is-Initialized {
 }
 
 function Choose-Service {
-    Write-Panel -Title "Service Selection" -TitleColor Yellow
+    Write-Panel -Title "Service Selection"
     while ($true) {
+        Write-Host "0. Back"
+        Write-MenuSeparator
         Write-Host "1. LanceDB"
         Write-Host "2. DuckDB"
-        Write-Host "0. Back"
         $choice = Read-Host "Choose service [1/2/0]"
         switch ($choice) {
             "1" { return "vldb-lancedb" }
@@ -732,11 +738,12 @@ function Choose-InstanceFile {
         return $null
     }
 
-    Write-Panel -Title "Installed Instances" -TitleColor Yellow
+    Write-Panel -Title "Installed Instances"
+    Write-Host "0. Back"
+    Write-MenuSeparator
     for ($index = 0; $index -lt $files.Count; $index++) {
         Write-Host ("{0}. {1}" -f ($index + 1), $files[$index].BaseName)
     }
-    Write-Host "0. Back"
 
     while ($true) {
         $choice = Read-Host "Select instance"
@@ -1200,7 +1207,7 @@ function Show-Instances {
         return
     }
 
-    Write-Panel -Title "Installed Instances" -TitleColor Yellow
+    Write-Panel -Title "Installed Instances"
     foreach ($file in $files) {
         $meta = Get-InstanceMeta $file
         $config = Read-InstanceConfig $file.FullName
@@ -1767,6 +1774,8 @@ function Uninstall-All {
 
 function Show-Menu {
     Write-Panel -Title "VulcanLocalDB Manager Script"
+    Write-ColorLine -Message "0. Exit" -Color White
+    Write-MenuSeparator
     Write-ColorLine -Message "1. Check for updates" -Color White
     Write-ColorLine -Message "2. Show installed instances" -Color White
     Write-ColorLine -Message "3. Modify host, port, data path or service name" -Color White
@@ -1778,7 +1787,6 @@ function Show-Menu {
     Write-ColorLine -Message "9. Uninstall a single service instance" -Color White
     Write-ColorLine -Message "10. Remove only the vldb manager command" -Color White
     Write-ColorLine -Message "11. Uninstall everything" -Color White
-    Write-ColorLine -Message "0. Exit" -Color White
 }
 
 Resolve-InstallDir
