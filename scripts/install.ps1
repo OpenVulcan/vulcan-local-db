@@ -1,12 +1,13 @@
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.23"
+$ScriptVersion = "0.1.24"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
 $GlobalHome = Join-Path $HOME ".vulcan\vldb"
 $GlobalConfig = Join-Path $GlobalHome "config.json"
 $InstallDir = $null
 $ManagerScriptVersion = $ScriptVersion
+$ReleaseCache = @{}
 
 try {
     [Net.ServicePointManager]::SecurityProtocol = `
@@ -270,6 +271,21 @@ function Get-ScriptVersionFromFile {
     return $null
 }
 
+function Get-BundledManagerVersion {
+    $sourcePath = $PSCommandPath
+    if ([string]::IsNullOrWhiteSpace($sourcePath)) {
+        return $null
+    }
+
+    $sourceDir = Split-Path -Parent $sourcePath
+    $bundledPath = Join-Path $sourceDir "vldb.ps1"
+    if (-not (Test-Path $bundledPath)) {
+        return $null
+    }
+
+    return (Get-ScriptVersionFromFile $bundledPath)
+}
+
 function Install-ManagerScript {
     $sourcePath = $PSCommandPath
     $sourceDir = $null
@@ -388,6 +404,16 @@ function Invoke-InstalledManagerIfPresent {
         return $false
     }
 
+    $bundledVersion = Get-BundledManagerVersion
+    $installedVersion = Get-ScriptVersionFromFile $managerPath
+    if ($bundledVersion -and (Compare-VersionStrings $bundledVersion $installedVersion) -gt 0) {
+        Write-Info "The bundled manager is newer than the installed one. Refreshing it first."
+        $script:InstallDir = [System.IO.Path]::GetFullPath($existingInstallDir)
+        Install-ManagerScript
+        Write-GlobalConfig
+        Ensure-PathExports
+    }
+
     Write-Info "An existing VulcanLocalDB installation was detected at $existingInstallDir."
     Write-Info "Launching the local manager script."
     try {
@@ -424,4 +450,6 @@ function Main {
     Launch-InstalledManager
 }
 
-Main
+if (-not $env:VULCANLOCALDB_TEST_MODE) {
+    Main
+}

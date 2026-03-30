@@ -8,8 +8,9 @@ Use the script installer when you want:
 
 - a guided setup flow instead of manual archive extraction
 - automatic download of the correct release archives
+- first-time setup to be handed off to the local `vldb` manager
 - default config generation for `vldb-lancedb` and `vldb-duckdb`
-- optional service registration
+- automatic service registration on supported platforms
 - the `vldb` manager command installed on the local machine
 
 Repository source:
@@ -51,17 +52,20 @@ If your network path or proxy serves a stale cached copy of the `main` branch sc
 
 ## What The Installer Does
 
-The installer can:
+The installer and manager together can:
 
 - show the current installer version and latest release tag
-- install the full stack or only the manager script
+- install only the manager script first
 - choose the install directory
-- configure host and default ports
+- refresh an older local manager first when the bundled manager is newer
+- launch the local manager automatically after the manager script is installed
+- configure bind IP, ports, data paths, and service names during first-time setup
 - download the matching GitHub Release archives
 - install `vldb-lancedb` and `vldb-duckdb`
 - generate default config files
 - install the `vldb` manager command
-- optionally register services for auto-start and auto-restart
+- update common shell profile files on Linux and macOS so `vldb` is easier to use in new terminals
+- register services automatically for auto-start and auto-restart on supported platforms
 - separate LanceDB and DuckDB data roots outside the installation directory by default
 
 The installer stores global settings here:
@@ -87,7 +91,7 @@ Typical dependencies:
 - Linux: `curl`, `tar`, `sha256sum` or equivalent
 - macOS: `curl`, `tar`, `shasum` or equivalent
 - Windows: built-in PowerShell download and hash features
-- Windows service mode: WinSW is downloaded automatically after confirmation
+- Windows service mode: WinSW is downloaded automatically into the `tools` directory when needed
 
 ## After Installation
 
@@ -110,7 +114,7 @@ Windows:
 vldb.cmd
 ```
 
-The `VulcanLocalDB Manager Script` can manage installed instances, adjust IP, port, and data path values, register or unregister services, check updates, and remove instances without deleting preserved database files.
+The `VulcanLocalDB Manager Script` can manage installed instances, adjust IP, port, data path, and service name values, start or stop single instances, start or stop all instances, check manager and application updates, and remove instances without deleting preserved database files.
 
 ## Related Guides
 

@@ -153,6 +153,8 @@ For local image builds, Dockerfiles, compose-based development, and custom Docke
 - Script installer guide:
   - English: [docs/script-install.en.md](./docs/script-install.en.md)
   - Chinese: [docs/script-install.zh-CN.md](./docs/script-install.zh-CN.md)
+- Script review and remediation note:
+  - Chinese: [docs/VLDB_script_review.md](./docs/VLDB_script_review.md)
 - Docker quick install guide:
   - English: [docs/docker-install.en.md](./docs/docker-install.en.md)
   - Chinese: [docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)

@@ -153,6 +153,8 @@ cargo build
 - 脚本安装说明：
   - 中文：[docs/script-install.zh-CN.md](./docs/script-install.zh-CN.md)
   - English: [docs/script-install.en.md](./docs/script-install.en.md)
+- 脚本审查与修复说明：
+  - 中文：[docs/VLDB_script_review.md](./docs/VLDB_script_review.md)
 - Docker 快速安装说明：
   - 中文：[docs/docker-install.zh-CN.md](./docs/docker-install.zh-CN.md)
   - English: [docs/docker-install.en.md](./docs/docker-install.en.md)

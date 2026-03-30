@@ -13,6 +13,7 @@
 - Native binary install guide (English): [`native-install.en.md`](./native-install.en.md)
 - 脚本安装说明：[`script-install.zh-CN.md`](./script-install.zh-CN.md)
 - Script installer guide (English): [`script-install.en.md`](./script-install.en.md)
+- 脚本审查与修复说明：[`VLDB_script_review.md`](./VLDB_script_review.md)
 - Docker 快速安装说明：[`docker-install.zh-CN.md`](./docker-install.zh-CN.md)
 - Docker quick install guide (English): [`docker-install.en.md`](./docker-install.en.md)
 - Docker 构建说明：[`docker.zh-CN.md`](./docker.zh-CN.md)

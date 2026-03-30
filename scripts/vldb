@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.23"
+SCRIPT_VERSION="0.1.24"
 GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
@@ -48,7 +48,7 @@ initialize_prompt_input() {
     return 0
   fi
 
-  if exec 3<>/dev/tty 2>/dev/null; then
+  if { exec 3<>/dev/tty; } 2>/dev/null; then
     PROMPT_INPUT_FD="3"
   else
     PROMPT_INPUT_FD="0"
@@ -460,6 +460,57 @@ version_compare() {
   done
 
   printf '0'
+}
+contains_unsafe_json_chars() {
+  local value="$1"
+  [[ "${value}" == *$'
+'* || "${value}" == *$'
+'* || "${value}" == *'"'* ]]
+}
+
+resolve_absolute_path() {
+  local value="$1"
+
+  [[ -n "${value}" ]] || return 1
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "${value}" <<'__PY_HELPER__'
+import os
+import sys
+print(os.path.abspath(sys.argv[1]), end="")
+__PY_HELPER__
+    return 0
+  fi
+
+  if command -v python >/dev/null 2>&1; then
+    python - "${value}" <<'__PY_HELPER__'
+import os
+import sys
+print(os.path.abspath(sys.argv[1]), end="")
+__PY_HELPER__
+    return 0
+  fi
+
+  if command -v perl >/dev/null 2>&1; then
+    perl -MFile::Spec -e 'print File::Spec->rel2abs(shift)' "${value}"
+    return 0
+  fi
+
+  [[ "${value}" = /* ]] || return 1
+  value="${value%/}"
+  printf '%s' "${value:-/}"
+}
+
+is_safe_absolute_path() {
+  local value="$1"
+  local normalized=""
+
+  [[ -n "$value" ]] || return 1
+  [[ "$value" = /* ]] || return 1
+  contains_unsafe_json_chars "$value" && return 1
+
+  normalized="$(resolve_absolute_path "$value")" || return 1
+  [[ "$normalized" = /* ]]
 }
 
 PACKAGE_MANAGER=""
@@ -943,12 +994,17 @@ default_instance_data_path() {
 }
 
 normalize_compare_path() {
-  local value="${1%/}"
-  printf '%s' "${value}"
+  local value=""
+  value="$(resolve_absolute_path "$1" 2>/dev/null || true)"
+  if [[ -z "${value}" ]]; then
+    value="$1"
+  fi
+  value="${value%/}"
+  printf '%s' "${value:-/}"
 }
 
 resolve_normalized_path() {
-  normalize_compare_path "$1"
+  resolve_absolute_path "$1"
 }
 
 paths_overlap() {
@@ -1042,6 +1098,19 @@ write_service_config() {
     return 1
   fi
 
+  if ! is_valid_service_name "${service_name}"; then
+    validation_error="$(say "Service names may contain letters, numbers, dot, dash, and underscore." "服务名只能包含字母、数字、点、连字符和下划线。")"
+    warn "${validation_error}" "${validation_error}"
+    return 1
+  fi
+
+  data_path="$(resolve_normalized_path "${data_path}")" || return 1
+  validation_error="$(validate_data_path "${data_path}" "${service}" "${instance}" || true)"
+  if [[ -n "${validation_error}" ]]; then
+    warn "${validation_error}" "${validation_error}"
+    return 1
+  fi
+
   mkdir -p "${INSTALL_DIR}/config"
   if [[ "${service}" == "vldb-lancedb" ]]; then
     mkdir -p "${data_path}"
@@ -1088,13 +1157,15 @@ validate_data_path() {
   local existing_name=""
   local file=""
 
-  [[ -n "${candidate_path}" && "${candidate_path}" = /* ]] || {
-    line "Please use a legal absolute data path." "请输入合法的绝对数据路径。"
+  if ! is_safe_absolute_path "${candidate_path}"; then
+    printf "%s" "$(say "Please use a legal absolute data path." "请输入合法的绝对数据路径。")"
     return 1
-  }
+  fi
+
+  candidate_path="$(resolve_normalized_path "${candidate_path}")" || return 1
 
   if paths_overlap "${INSTALL_DIR}" "${candidate_path}"; then
-    line "Database paths must stay outside the installation directory." "数据库路径必须位于安装目录之外。"
+    printf "%s" "$(say "Database paths must stay outside the installation directory." "数据库路径必须位于安装目录之外。")"
     return 1
   fi
 
@@ -1106,7 +1177,7 @@ validate_data_path() {
     existing_path="$(config_db_path "${file}")"
     [[ -n "${existing_path}" ]] || continue
     if paths_overlap "${candidate_path}" "${existing_path}"; then
-      line "Data path conflicts with ${existing_name}: ${existing_path}" "数据路径与 ${existing_name} 冲突：${existing_path}"
+      printf "%s" "$(say "Data path conflicts with ${existing_name}: ${existing_path}" "数据路径与 ${existing_name} 冲突：${existing_path}")"
       return 1
     fi
   done < <(list_config_files)
@@ -1645,10 +1716,14 @@ choose_data_roots() {
 
   while true; do
     lance_root="$(prompt_config_value "LanceDB data root" "LanceDB 数据根目录" "${default_lance}")"
-    if ! [[ "${lance_root}" = /* ]]; then
+    if ! is_safe_absolute_path "${lance_root}"; then
       info "Invalid LanceDB data root." "LanceDB 数据根目录不合法。"
       continue
     fi
+    lance_root="$(resolve_normalized_path "${lance_root}")" || {
+      info "Invalid LanceDB data root." "LanceDB 数据根目录不合法。"
+      continue
+    }
     if [[ -e "${lance_root}" && ! -d "${lance_root}" ]]; then
       info "LanceDB data root already exists and is not a directory." "LanceDB 数据根目录已存在且不是目录。"
       continue
@@ -1659,10 +1734,14 @@ choose_data_roots() {
     fi
 
     duck_root="$(prompt_config_value "DuckDB data root" "DuckDB 数据根目录" "${default_duck}")"
-    if ! [[ "${duck_root}" = /* ]]; then
+    if ! is_safe_absolute_path "${duck_root}"; then
       info "Invalid DuckDB data root." "DuckDB 数据根目录不合法。"
       continue
     fi
+    duck_root="$(resolve_normalized_path "${duck_root}")" || {
+      info "Invalid DuckDB data root." "DuckDB 数据根目录不合法。"
+      continue
+    }
     if [[ -e "${duck_root}" && ! -d "${duck_root}" ]]; then
       info "DuckDB data root already exists and is not a directory." "DuckDB 数据根目录已存在且不是目录。"
       continue
@@ -2371,13 +2450,37 @@ update_applications_to_tag() {
   info "Application binaries updated to ${target_tag}." "应用二进制文件已更新到 ${target_tag}。"
 }
 
+list_profile_files() {
+  if [[ -n "${PROFILE:-}" ]]; then
+    printf '%s
+' "${PROFILE}"
+    return
+  fi
+
+  {
+    case "${SHELL:-}" in
+      */zsh)
+        printf '%s
+' "${HOME}/.zprofile" "${HOME}/.zshrc"
+        ;;
+      */bash)
+        printf '%s
+' "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile"
+        ;;
+      *)
+        printf '%s
+' "${HOME}/.profile"
+        ;;
+    esac
+  } | awk '!seen[$0]++'
+}
+
 remove_profile_exports() {
   local profile_file
   local marker_begin="# VulcanLocalDB begin"
   local marker_end="# VulcanLocalDB end"
 
-  profile_file="${HOME}/.profile"
-  for profile_file in "${HOME}/.profile" "${HOME}/.bash_profile" "${HOME}/.zprofile"; do
+  while IFS= read -r profile_file; do
     [[ -f "${profile_file}" ]] || continue
     if grep -Fq "${marker_begin}" "${profile_file}"; then
       awk -v begin="${marker_begin}" -v end="${marker_end}" '
@@ -2387,7 +2490,7 @@ remove_profile_exports() {
       ' "${profile_file}" >"${profile_file}.tmp"
       mv "${profile_file}.tmp" "${profile_file}"
     fi
-  done
+  done < <(list_profile_files)
 }
 
 uninstall_launcher_only() {
@@ -2483,4 +2586,6 @@ main() {
   done
 }
 
-main "$@"
+if [[ "${VULCANLOCALDB_TEST_MODE:-0}" != "1" ]]; then
+  main "$@"
+fi

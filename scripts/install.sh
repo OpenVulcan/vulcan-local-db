@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.23"
+SCRIPT_VERSION="0.1.24"
 REPO_SLUG="OpenVulcan/vulcan-local-db"
 REPO_URL="https://github.com/OpenVulcan/vulcan-local-db"
 RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts"
@@ -39,7 +39,7 @@ initialize_prompt_input() {
     return 0
   fi
 
-  if exec 3<>/dev/tty 2>/dev/null; then
+  if { exec 3<>/dev/tty; } 2>/dev/null; then
     PROMPT_INPUT_FD="3"
   else
     PROMPT_INPUT_FD="0"
@@ -303,27 +303,29 @@ ensure_checksum_tool() {
   fi
 }
 
-detect_profile_file() {
+list_profile_files() {
   if [[ -n "${PROFILE:-}" ]]; then
-    printf '%s' "${PROFILE}"
+    printf '%s\n' "${PROFILE}"
     return
   fi
 
-  case "${SHELL:-}" in
-    */zsh)
-      printf '%s' "${HOME}/.zprofile"
-      ;;
-    */bash)
-      if [[ -f "${HOME}/.bash_profile" ]]; then
-        printf '%s' "${HOME}/.bash_profile"
-      else
-        printf '%s' "${HOME}/.profile"
-      fi
-      ;;
-    *)
-      printf '%s' "${HOME}/.profile"
-      ;;
-  esac
+  {
+    case "${SHELL:-}" in
+      */zsh)
+        printf '%s\n' "${HOME}/.zprofile" "${HOME}/.zshrc"
+        ;;
+      */bash)
+        printf '%s\n' "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile"
+        ;;
+      *)
+        printf '%s\n' "${HOME}/.profile"
+        ;;
+    esac
+  } | awk '!seen[$0]++'
+}
+
+detect_profile_file() {
+  list_profile_files | head -n1
 }
 
 default_install_dir() {
@@ -371,15 +373,54 @@ get_existing_install_dir() {
   return 1
 }
 
+contains_unsafe_json_chars() {
+  local value="$1"
+  [[ "${value}" == *$'\n'* || "${value}" == *$'\r'* || "${value}" == *'"'* ]]
+}
+
+resolve_absolute_path() {
+  local value="$1"
+
+  [[ -n "${value}" ]] || return 1
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "${value}" <<'__PY_HELPER__'
+import os
+import sys
+print(os.path.abspath(sys.argv[1]), end="")
+__PY_HELPER__
+    return 0
+  fi
+
+  if command -v python >/dev/null 2>&1; then
+    python - "${value}" <<'__PY_HELPER__'
+import os
+import sys
+print(os.path.abspath(sys.argv[1]), end="")
+__PY_HELPER__
+    return 0
+  fi
+
+  if command -v perl >/dev/null 2>&1; then
+    perl -MFile::Spec -e 'print File::Spec->rel2abs(shift)' "${value}"
+    return 0
+  fi
+
+  [[ "${value}" = /* ]] || return 1
+  value="${value%/}"
+  printf '%s' "${value:-/}"
+}
+
 is_valid_install_dir() {
   local value="$1"
+  local normalized=""
 
   [[ -n "$value" ]] || return 1
   [[ "$value" = /* ]] || return 1
-  [[ "$value" != *$'\n'* ]] || return 1
-  [[ "$value" != *$'\r'* ]] || return 1
-  [[ "$value" != *'"'* ]] || return 1
-  return 0
+  contains_unsafe_json_chars "$value" && return 1
+
+  normalized="$(resolve_absolute_path "$value")" || return 1
+  [[ "$normalized" = /* ]]
 }
 
 is_valid_port() {
@@ -410,8 +451,13 @@ default_instance_data_path() {
 }
 
 normalize_compare_path() {
-  local value="${1%/}"
-  printf '%s' "${value}"
+  local value=""
+  value="$(resolve_absolute_path "$1" 2>/dev/null || true)"
+  if [[ -z "${value}" ]]; then
+    value="$1"
+  fi
+  value="${value%/}"
+  printf '%s' "${value:-/}"
 }
 
 paths_overlap() {
@@ -519,6 +565,43 @@ show_update_notice() {
   fi
 }
 
+bundled_controller_path() {
+  local source_dir
+  source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  printf '%s' "${source_dir}/vldb"
+}
+
+bundled_controller_version() {
+  local bundled_path
+  bundled_path="$(bundled_controller_path)"
+  [[ -f "${bundled_path}" ]] || return 1
+  extract_script_version_from_file "${bundled_path}"
+}
+
+refresh_installed_controller_from_bundle_if_needed() {
+  local existing_install_dir="$1"
+  local controller_path="$2"
+  local bundled_path=""
+  local bundled_version=""
+  local installed_version=""
+  local previous_install_dir="${INSTALL_DIR}"
+
+  bundled_path="$(bundled_controller_path)"
+  [[ -f "${bundled_path}" ]] || return 0
+
+  bundled_version="$(bundled_controller_version || true)"
+  installed_version="$(extract_script_version_from_file "${controller_path}" || true)"
+
+  if [[ -n "${bundled_version}" && "$(version_compare "${bundled_version}" "${installed_version}")" == "1" ]]; then
+    line "The bundled manager is newer than the installed one (${bundled_version} > ${installed_version:-unknown}). Refreshing it first." "安装包内置的管理器比已安装版本更新（${bundled_version} > ${installed_version:-unknown}），先刷新本地管理器。"
+    INSTALL_DIR="${existing_install_dir}"
+    install_manager_script
+    write_global_config
+  fi
+
+  INSTALL_DIR="${previous_install_dir:-${existing_install_dir}}"
+}
+
 choose_language() {
   show_panel "VulcanLocalDB Setup"
   terminal_line "1. English (default)"
@@ -546,6 +629,11 @@ choose_install_dir() {
       line "Please use an absolute path without quotes or line breaks." "请输入合法的绝对路径，且不能包含引号或换行。"
       continue
     fi
+
+    candidate="$(resolve_absolute_path "${candidate}")" || {
+      line "The installer cannot normalize this directory." "安装器无法规范化该目录路径。"
+      continue
+    }
 
     if [[ -e "${candidate}" && ! -d "${candidate}" ]]; then
       line "The selected path already exists and is not a directory." "所选路径已存在且不是目录。"
@@ -678,6 +766,8 @@ invoke_installed_controller_if_present() {
   controller_path="${existing_install_dir}/bin/vldb"
   [[ -x "${controller_path}" ]] || return 1
 
+  refresh_installed_controller_from_bundle_if_needed "${existing_install_dir}" "${controller_path}"
+
   line "An existing VulcanLocalDB installation was detected at ${existing_install_dir}." "检测到已有 VulcanLocalDB 安装：${existing_install_dir}。"
   line "Launching the local manager script so it can check for updates." "正在启动本地管理脚本，并先检查更新。"
   if "${controller_path}" --from-installer; then
@@ -694,7 +784,7 @@ install_manager_script() {
   local installed_script_path
 
   step "Installing manager script" "正在安装管理脚本"
-  source_dir="$(cd "$(dirname "$0")" && pwd)"
+  source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   installed_script_path="${INSTALL_DIR}/bin/vldb"
   mkdir -p "${INSTALL_DIR}/bin"
 
@@ -757,19 +847,21 @@ ensure_profile_exports() {
   local marker_end="# VulcanLocalDB end"
 
   step "Updating shell profile and PATH" "正在更新 shell 配置和 PATH"
-  profile_file="$(detect_profile_file)"
-  mkdir -p "$(dirname "${profile_file}")"
-  touch "${profile_file}"
+  while IFS= read -r profile_file; do
+    [[ -n "${profile_file}" ]] || continue
+    mkdir -p "$(dirname "${profile_file}")"
+    touch "${profile_file}"
 
-  if ! grep -Fq "${marker_begin}" "${profile_file}"; then
-    cat >>"${profile_file}" <<EOF
+    if ! grep -Fq "${marker_begin}" "${profile_file}"; then
+      cat >>"${profile_file}" <<EOF
 ${marker_begin}
 export VULCANLOCALDB_HOME="${INSTALL_DIR}"
 export VULCANLOCALDB_BIN="${INSTALL_DIR}/bin"
 export PATH="${INSTALL_DIR}/bin:\$PATH"
 ${marker_end}
 EOF
-  fi
+    fi
+  done < <(list_profile_files)
 
   export VULCANLOCALDB_HOME="${INSTALL_DIR}"
   export VULCANLOCALDB_BIN="${INSTALL_DIR}/bin"
@@ -947,4 +1039,6 @@ main() {
   exec "${INSTALL_DIR}/bin/vldb" --from-installer
 }
 
-main "$@"
+if [[ "${VULCANLOCALDB_TEST_MODE:-0}" != "1" ]]; then
+  main "$@"
+fi

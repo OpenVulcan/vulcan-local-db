@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.23"
+$ScriptVersion = "0.1.24"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -19,6 +19,7 @@ $LanceDbRoot = Join-Path $GlobalHome "lancedb"
 $DuckDbRoot = Join-Path $GlobalHome "duckdb"
 $WinSWVersion = "v2.12.0"
 $LatestRelease = $null
+$ReleaseCache = @{}
 $BoxMinWidth = 18
 $BoxMaxWidth = 50
 $CurrentBoxWidth = 50
@@ -868,17 +869,48 @@ function Try-GetLatestReleaseTag {
     }
 }
 
+function Get-ReleaseByTag {
+    param([string]$Tag)
+
+    $cacheKey = if ([string]::IsNullOrWhiteSpace($Tag)) { "__latest__" } else { $Tag }
+    if ($script:ReleaseCache.ContainsKey($cacheKey)) {
+        return $script:ReleaseCache[$cacheKey]
+    }
+
+    $uri = if ([string]::IsNullOrWhiteSpace($Tag)) {
+        "https://api.github.com/repos/$RepoSlug/releases/latest"
+    } else {
+        "https://api.github.com/repos/$RepoSlug/releases/tags/$Tag"
+    }
+
+    try {
+        $release = Invoke-RestMethod -Uri $uri
+    } catch {
+        if ([string]::IsNullOrWhiteSpace($Tag)) {
+            throw
+        }
+
+        throw "Unable to load release metadata for tag '$Tag'."
+    }
+
+    if (-not $release.tag_name) {
+        if ([string]::IsNullOrWhiteSpace($Tag)) {
+            throw "Unable to resolve the latest release tag."
+        }
+
+        throw "Unable to resolve release metadata for tag '$Tag'."
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Tag)) {
+        $script:LatestRelease = $release
+    }
+
+    $script:ReleaseCache[$cacheKey] = $release
+    return $release
+}
+
 function Get-LatestRelease {
-    if ($script:LatestRelease) {
-        return $script:LatestRelease
-    }
-
-    $script:LatestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/releases/latest"
-    if (-not $script:LatestRelease.tag_name) {
-        throw "Unable to resolve the latest release tag."
-    }
-
-    return $script:LatestRelease
+    return (Get-ReleaseByTag -Tag $null)
 }
 
 function Download-FileWithProgress {
@@ -964,9 +996,9 @@ function Install-ServiceBinary {
         [string]$Tag
     )
 
-    $release = Get-LatestRelease
+    $release = if ($Tag) { Get-ReleaseByTag -Tag $Tag } else { Get-LatestRelease }
     $target = Get-TargetTriple
-    $resolvedTag = if ($Tag) { $Tag } else { [string]$release.tag_name }
+    $resolvedTag = [string]$release.tag_name
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("vulcanlocaldb-" + [guid]::NewGuid().ToString("N"))
 
     New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
@@ -986,7 +1018,7 @@ function Ensure-ServiceBinaryInstalled {
         return
     }
 
-    $release = Get-LatestRelease
+    $release = if ($script:ReleaseTag) { Get-ReleaseByTag -Tag $script:ReleaseTag } else { Get-LatestRelease }
     $script:ReleaseTag = [string]$release.tag_name
     Install-ServiceBinary -Service $Service -Tag $script:ReleaseTag
     Write-Config
@@ -1902,22 +1934,24 @@ if (-not (Is-Initialized)) {
     }
 }
 
-while ($true) {
-    Show-Menu
-    $choice = Read-Host "Select an action"
-    switch ($choice) {
-        "1" { Invoke-MenuAction -Label "checking for updates" -Action { Check-Updates } }
-        "2" { Invoke-MenuAction -Label "showing installed instances" -Action { Show-Instances } }
-        "3" { Invoke-MenuAction -Label "updating instance settings" -Action { Configure-Instance } }
-        "4" { Invoke-MenuAction -Label "installing a single service instance" -Action { Install-SingleInstance } }
-        "5" { Invoke-MenuAction -Label "starting a single service instance" -Action { Start-SingleInstance } }
-        "6" { Invoke-MenuAction -Label "stopping a single service instance" -Action { Stop-SingleInstance } }
-        "7" { Invoke-MenuAction -Label "starting all service instances" -Action { Start-AllInstances } }
-        "8" { Invoke-MenuAction -Label "stopping all service instances" -Action { Stop-AllInstances } }
-        "9" { Invoke-MenuAction -Label "uninstalling a single service instance" -Action { Uninstall-SingleInstance } }
-        "10" { Invoke-MenuAction -Label "removing the manager command" -Action { Remove-LauncherOnly } }
-        "11" { Invoke-MenuAction -Label "uninstalling everything" -Action { Uninstall-All } }
-        "0" { Write-Done "Exit"; exit 0 }
-        default { Write-Warn "Invalid selection." }
+if (-not $env:VULCANLOCALDB_TEST_MODE) {
+    while ($true) {
+        Show-Menu
+        $choice = Read-Host "Select an action"
+        switch ($choice) {
+            "1" { Invoke-MenuAction -Label "checking for updates" -Action { Check-Updates } }
+            "2" { Invoke-MenuAction -Label "showing installed instances" -Action { Show-Instances } }
+            "3" { Invoke-MenuAction -Label "updating instance settings" -Action { Configure-Instance } }
+            "4" { Invoke-MenuAction -Label "installing a single service instance" -Action { Install-SingleInstance } }
+            "5" { Invoke-MenuAction -Label "starting a single service instance" -Action { Start-SingleInstance } }
+            "6" { Invoke-MenuAction -Label "stopping a single service instance" -Action { Stop-SingleInstance } }
+            "7" { Invoke-MenuAction -Label "starting all service instances" -Action { Start-AllInstances } }
+            "8" { Invoke-MenuAction -Label "stopping all service instances" -Action { Stop-AllInstances } }
+            "9" { Invoke-MenuAction -Label "uninstalling a single service instance" -Action { Uninstall-SingleInstance } }
+            "10" { Invoke-MenuAction -Label "removing the manager command" -Action { Remove-LauncherOnly } }
+            "11" { Invoke-MenuAction -Label "uninstalling everything" -Action { Uninstall-All } }
+            "0" { Write-Done "Exit"; exit 0 }
+            default { Write-Warn "Invalid selection." }
+        }
     }
 }
