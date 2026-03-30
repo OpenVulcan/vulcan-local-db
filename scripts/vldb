@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.22"
+SCRIPT_VERSION="0.1.23"
 GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
@@ -131,6 +131,11 @@ supports_color() {
 write_color_line() {
   local color_code="$1"
   local message="$2"
+
+  if [[ -z "${color_code}" || "${color_code}" == "default" ]]; then
+    terminal_line "${message}"
+    return 0
+  fi
 
   initialize_prompt_input
   if supports_color; then
@@ -285,7 +290,7 @@ write_box_border() {
 
 write_box_line() {
   local text="$1"
-  local text_color="${2:-37}"
+  local text_color="${2:-default}"
   local wrapped_line
   local padded_text
 
@@ -293,10 +298,18 @@ write_box_line() {
     padded_text="$(pad_box_text "${wrapped_line}")"
     initialize_prompt_input
     if supports_color; then
-      if [[ "${PROMPT_INPUT_FD}" == "3" ]]; then
-        printf '\033[32m| \033[0m\033[%sm%s\033[0m\033[32m |\033[0m\n' "${text_color}" "${padded_text}" >&3
+      if [[ "${text_color}" == "default" ]]; then
+        if [[ "${PROMPT_INPUT_FD}" == "3" ]]; then
+          printf '\033[32m| \033[0m%s\033[32m |\033[0m\n' "${padded_text}" >&3
+        else
+          printf '\033[32m| \033[0m%s\033[32m |\033[0m\n' "${padded_text}" >&2
+        fi
       else
-        printf '\033[32m| \033[0m\033[%sm%s\033[0m\033[32m |\033[0m\n' "${text_color}" "${padded_text}" >&2
+        if [[ "${PROMPT_INPUT_FD}" == "3" ]]; then
+          printf '\033[32m| \033[0m\033[%sm%s\033[0m\033[32m |\033[0m\n' "${text_color}" "${padded_text}" >&3
+        else
+          printf '\033[32m| \033[0m\033[%sm%s\033[0m\033[32m |\033[0m\n' "${text_color}" "${padded_text}" >&2
+        fi
       fi
     else
       terminal_line "| ${padded_text} |"
@@ -320,27 +333,27 @@ show_menu_separator() {
 }
 
 info() {
-  write_color_line "36" "$(say "$1" "$2")"
+  write_color_line "default" "$(say "$1" "$2")"
 }
 
 warn() {
-  write_color_line "31" "$(say "$1" "$2")"
+  write_color_line "default" "$(say "$1" "$2")"
 }
 
 success() {
-  write_color_line "32" "$(say "$1" "$2")"
+  write_color_line "default" "$(say "$1" "$2")"
 }
 
 step() {
-  write_color_line "33" "$(say "[Step] $1" "[步骤] $2")"
+  write_color_line "default" "$(say "[Step] $1" "[步骤] $2")"
 }
 
 running() {
-  write_color_line "33" "$(say "Running $1..." "正在执行 $2……")"
+  write_color_line "default" "$(say "Running $1..." "正在执行 $2……")"
 }
 
 completed_action() {
-  write_color_line "32" "$(say "$1 completed." "$2已完成。")"
+  write_color_line "default" "$(say "$1 completed." "$2已完成。")"
 }
 
 invoke_menu_action() {
