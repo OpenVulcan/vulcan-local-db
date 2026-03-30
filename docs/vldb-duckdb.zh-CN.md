@@ -92,7 +92,19 @@ docker run -d \
   "port": 50052,
   "db_path": "./data/duckdb.db",
   "memory_limit": "2GB",
-  "threads": 4
+  "threads": 4,
+  "logging": {
+    "enabled": true,
+    "file_enabled": true,
+    "stderr_enabled": true,
+    "request_log_enabled": true,
+    "slow_query_log_enabled": true,
+    "slow_query_threshold_ms": 1000,
+    "slow_query_full_sql_enabled": true,
+    "sql_preview_chars": 160,
+    "log_dir": "",
+    "log_file_name": "vldb-duckdb.log"
+  }
 }
 ```
 
@@ -103,6 +115,16 @@ docker run -d \
 - `db_path`：DuckDB 数据库文件路径
 - `memory_limit`：DuckDB `PRAGMA memory_limit`
 - `threads`：DuckDB `PRAGMA threads`
+- `logging.enabled`：服务日志总开关
+- `logging.file_enabled`：是否写入日志文件
+- `logging.stderr_enabled`：是否同时输出到标准错误
+- `logging.request_log_enabled`：是否记录每次请求的开始、成功和失败日志
+- `logging.slow_query_log_enabled`：是否记录慢 SQL 日志
+- `logging.slow_query_threshold_ms`：慢 SQL 阈值，单位毫秒，默认 `1000`
+- `logging.slow_query_full_sql_enabled`：慢 SQL 日志是否输出完整 SQL
+- `logging.sql_preview_chars`：普通请求日志里的 SQL 预览最大长度
+- `logging.log_dir`：可选自定义日志目录；为空时会自动使用 DuckDB 文件同级、同名目录
+- `logging.log_file_name`：日志文件名
 
 配置发现顺序：
 
@@ -116,6 +138,7 @@ docker run -d \
 - 配置文件中的相对 `db_path` 以配置文件所在目录为基准计算
 - 支持绝对路径
 - 支持 `~`
+- `logging.log_dir` 为空时，`./data/duckdb.db` 会把日志写到 `./data/duckdb/`
 
 ## 如何调用函数
 
@@ -230,5 +253,6 @@ go run . -addr 127.0.0.1:50052 -out ./query.arrow.stream
 - `QueryStream` 的结果是 Arrow IPC 字节流，不是 JSON
 - 服务内部会为每个请求克隆独立 DuckDB 连接
 - `memory_limit` 和 `threads` 会在启动和请求连接上重复应用
+- 默认启用请求日志和慢 SQL 日志
 - 当前服务没有内置认证、鉴权和 TLS
 - 如果客户端不消费完整流，查询结果可能只部分到达

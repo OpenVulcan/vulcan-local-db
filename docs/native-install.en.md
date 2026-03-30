@@ -72,7 +72,19 @@ Typical defaults:
 {
   "host": "127.0.0.1",
   "port": 50051,
-  "db_path": "./data"
+  "db_path": "./data",
+  "logging": {
+    "enabled": true,
+    "file_enabled": true,
+    "stderr_enabled": true,
+    "request_log_enabled": true,
+    "slow_request_log_enabled": true,
+    "slow_request_threshold_ms": 1000,
+    "include_request_details_in_slow_log": true,
+    "request_preview_chars": 160,
+    "log_dir": "",
+    "log_file_name": "vldb-lancedb.log"
+  }
 }
 ```
 
@@ -84,7 +96,19 @@ Typical defaults:
   "port": 50052,
   "db_path": "./data/duckdb.db",
   "memory_limit": "2GB",
-  "threads": 4
+  "threads": 4,
+  "logging": {
+    "enabled": true,
+    "file_enabled": true,
+    "stderr_enabled": true,
+    "request_log_enabled": true,
+    "slow_query_log_enabled": true,
+    "slow_query_threshold_ms": 1000,
+    "slow_query_full_sql_enabled": true,
+    "sql_preview_chars": 160,
+    "log_dir": "",
+    "log_file_name": "vldb-duckdb.log"
+  }
 }
 ```
 

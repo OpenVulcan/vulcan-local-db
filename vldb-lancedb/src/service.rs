@@ -1,5 +1,7 @@
 use std::io::Cursor;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use arrow_array::builder::{
     BooleanBuilder, FixedSizeListBuilder, Float32Builder, Float64Builder, Int32Builder,
@@ -21,6 +23,8 @@ use lancedb::{Connection, Table};
 use serde_json::{Map, Value};
 use tonic::{Request, Response, Status};
 
+use crate::config::LoggingConfig;
+use crate::logging::ServiceLogger;
 use crate::pb::lance_db_service_server::LanceDbService;
 use crate::pb::{
     ColumnDef, ColumnType, CreateTableRequest, CreateTableResponse, DeleteRequest, DeleteResponse,
@@ -30,16 +34,41 @@ use crate::pb::{
 
 #[derive(Clone)]
 pub struct LanceDbGrpcService {
+    state: Arc<ServiceState>,
+}
+
+struct ServiceState {
     db: Arc<Connection>,
+    logger: Arc<ServiceLogger>,
+}
+
+#[derive(Clone, Debug)]
+struct RequestLogContext {
+    request_id: u64,
+    operation: &'static str,
+    remote_addr: String,
+    summary: String,
+    started_at: Instant,
+    logger: Arc<ServiceLogger>,
+    request_log_enabled: bool,
+    slow_request_log_enabled: bool,
+    slow_request_threshold: Duration,
+    include_request_details_in_slow_log: bool,
 }
 
 impl LanceDbGrpcService {
-    pub fn new(db: Connection) -> Self {
-        Self { db: Arc::new(db) }
+    pub fn new(db: Connection, logger: Arc<ServiceLogger>) -> Self {
+        Self {
+            state: Arc::new(ServiceState {
+                db: Arc::new(db),
+                logger,
+            }),
+        }
     }
 
     async fn open_table(&self, table_name: &str) -> Result<Table, Status> {
-        self.db
+        self.state
+            .db
             .open_table(table_name.to_string())
             .execute()
             .await
@@ -47,54 +76,129 @@ impl LanceDbGrpcService {
     }
 }
 
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
 #[tonic::async_trait]
 impl LanceDbService for LanceDbGrpcService {
     async fn create_table(
         &self,
         request: Request<CreateTableRequest>,
     ) -> Result<Response<CreateTableResponse>, Status> {
+        let context = build_request_context(
+            &self.state.logger,
+            "create_table",
+            request.remote_addr(),
+            format!(
+                "table={} columns={} overwrite_if_exists={}",
+                request.get_ref().table_name.trim(),
+                request.get_ref().columns.len(),
+                request.get_ref().overwrite_if_exists,
+            ),
+        );
+        log_request_started(&context);
         let req = request.into_inner();
 
         if req.table_name.trim().is_empty() {
-            return Err(Status::invalid_argument("table_name must not be empty"));
+            let status = Status::invalid_argument("table_name must not be empty");
+            log_request_failed(&context, &status);
+            return Err(status);
         }
         if req.columns.is_empty() {
-            return Err(Status::invalid_argument("columns must not be empty"));
+            let status = Status::invalid_argument("columns must not be empty");
+            log_request_failed(&context, &status);
+            return Err(status);
         }
 
-        let schema = build_arrow_schema(&req.columns)?;
-        let mut builder = self.db.create_empty_table(req.table_name.clone(), schema);
+        let schema = match build_arrow_schema(&req.columns) {
+            Ok(schema) => schema,
+            Err(status) => {
+                log_request_failed(&context, &status);
+                return Err(status);
+            }
+        };
+        let mut builder = self
+            .state
+            .db
+            .create_empty_table(req.table_name.clone(), schema);
         builder = if req.overwrite_if_exists {
             builder.mode(CreateTableMode::Overwrite)
         } else {
             builder.mode(CreateTableMode::Create)
         };
 
-        builder.execute().await.map_err(to_status)?;
+        match builder.execute().await.map_err(to_status) {
+            Ok(_) => {}
+            Err(status) => {
+                log_request_failed(&context, &status);
+                return Err(status);
+            }
+        }
 
-        Ok(Response::new(CreateTableResponse {
+        let response = CreateTableResponse {
             success: true,
             message: format!("table '{}' is ready", req.table_name),
-        }))
+        };
+        log_request_succeeded(&context, response.message.as_str());
+        Ok(Response::new(response))
     }
 
     async fn vector_upsert(
         &self,
         request: Request<UpsertRequest>,
     ) -> Result<Response<UpsertResponse>, Status> {
+        let context = build_request_context(
+            &self.state.logger,
+            "vector_upsert",
+            request.remote_addr(),
+            format!(
+                "table={} key_columns={} input_format={:?} payload_bytes={}",
+                request.get_ref().table_name.trim(),
+                request.get_ref().key_columns.len(),
+                request.get_ref().input_format(),
+                request.get_ref().data.len(),
+            ),
+        );
+        log_request_started(&context);
         let req = request.into_inner();
 
         if req.table_name.trim().is_empty() {
-            return Err(Status::invalid_argument("table_name must not be empty"));
+            let status = Status::invalid_argument("table_name must not be empty");
+            log_request_failed(&context, &status);
+            return Err(status);
         }
 
-        let table = self.open_table(&req.table_name).await?;
-        let schema = table.schema().await.map_err(to_status)?;
-        let (batches, input_rows) = decode_input_to_batches(req.input_format(), &req.data, schema)?;
+        let table = match self.open_table(&req.table_name).await {
+            Ok(table) => table,
+            Err(status) => {
+                log_request_failed(&context, &status);
+                return Err(status);
+            }
+        };
+        let schema = match table.schema().await.map_err(to_status) {
+            Ok(schema) => schema,
+            Err(status) => {
+                log_request_failed(&context, &status);
+                return Err(status);
+            }
+        };
+        let (batches, input_rows) =
+            match decode_input_to_batches(req.input_format(), &req.data, schema) {
+                Ok(result) => result,
+                Err(status) => {
+                    log_request_failed(&context, &status);
+                    return Err(status);
+                }
+            };
 
         if input_rows == 0 {
-            let version = table.version().await.map_err(to_status)?;
-            return Ok(Response::new(UpsertResponse {
+            let version = match table.version().await.map_err(to_status) {
+                Ok(version) => version,
+                Err(status) => {
+                    log_request_failed(&context, &status);
+                    return Err(status);
+                }
+            };
+            let response = UpsertResponse {
                 success: true,
                 message: "no rows to write".to_string(),
                 version,
@@ -102,27 +206,48 @@ impl LanceDbService for LanceDbGrpcService {
                 inserted_rows: 0,
                 updated_rows: 0,
                 deleted_rows: 0,
-            }));
+            };
+            log_request_succeeded(&context, response.message.as_str());
+            return Ok(Response::new(response));
         }
 
-        let schema = table.schema().await.map_err(to_status)?;
+        let schema = match table.schema().await.map_err(to_status) {
+            Ok(schema) => schema,
+            Err(status) => {
+                log_request_failed(&context, &status);
+                return Err(status);
+            }
+        };
         let reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
             batches.into_iter().map(Ok),
             schema.clone(),
         ));
 
         let response = if req.key_columns.is_empty() {
-            table
+            match table
                 .add(reader)
                 .mode(AddDataMode::Append)
                 .execute()
                 .await
-                .map_err(to_status)?;
+                .map_err(to_status)
+            {
+                Ok(_) => {}
+                Err(status) => {
+                    log_request_failed(&context, &status);
+                    return Err(status);
+                }
+            }
 
             UpsertResponse {
                 success: true,
                 message: "append completed".to_string(),
-                version: table.version().await.map_err(to_status)?,
+                version: match table.version().await.map_err(to_status) {
+                    Ok(version) => version,
+                    Err(status) => {
+                        log_request_failed(&context, &status);
+                        return Err(status);
+                    }
+                },
                 input_rows,
                 inserted_rows: input_rows,
                 updated_rows: 0,
@@ -140,7 +265,13 @@ impl LanceDbService for LanceDbGrpcService {
                 .when_matched_update_all(None)
                 .when_not_matched_insert_all();
 
-            let result = merge.execute(reader).await.map_err(to_status)?;
+            let result = match merge.execute(reader).await.map_err(to_status) {
+                Ok(result) => result,
+                Err(status) => {
+                    log_request_failed(&context, &status);
+                    return Err(status);
+                }
+            };
 
             UpsertResponse {
                 success: true,
@@ -153,6 +284,7 @@ impl LanceDbService for LanceDbGrpcService {
             }
         };
 
+        log_request_succeeded(&context, response.message.as_str());
         Ok(Response::new(response))
     }
 
@@ -160,19 +292,52 @@ impl LanceDbService for LanceDbGrpcService {
         &self,
         request: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
+        let context = build_request_context(
+            &self.state.logger,
+            "vector_search",
+            request.remote_addr(),
+            format!(
+                "table={} vector_dim={} limit={} output_format={:?} filter=\"{}\"",
+                request.get_ref().table_name.trim(),
+                request.get_ref().vector.len(),
+                request.get_ref().limit,
+                request.get_ref().output_format(),
+                preview_text(
+                    request.get_ref().filter.trim(),
+                    self.state.logger.config().request_preview_chars
+                ),
+            ),
+        );
+        log_request_started(&context);
         let req = request.into_inner();
 
         if req.table_name.trim().is_empty() {
-            return Err(Status::invalid_argument("table_name must not be empty"));
+            let status = Status::invalid_argument("table_name must not be empty");
+            log_request_failed(&context, &status);
+            return Err(status);
         }
         if req.vector.is_empty() {
-            return Err(Status::invalid_argument("vector must not be empty"));
+            let status = Status::invalid_argument("vector must not be empty");
+            log_request_failed(&context, &status);
+            return Err(status);
         }
 
-        let table = self.open_table(&req.table_name).await?;
+        let table = match self.open_table(&req.table_name).await {
+            Ok(table) => table,
+            Err(status) => {
+                log_request_failed(&context, &status);
+                return Err(status);
+            }
+        };
         let output_format = req.output_format();
         let vector = req.vector;
-        let mut query = table.query().nearest_to(vector).map_err(to_status)?;
+        let mut query = match table.query().nearest_to(vector).map_err(to_status) {
+            Ok(query) => query,
+            Err(status) => {
+                log_request_failed(&context, &status);
+                return Err(status);
+            }
+        };
 
         if !req.vector_column.trim().is_empty() {
             query = query.column(req.vector_column.trim());
@@ -189,78 +354,286 @@ impl LanceDbService for LanceDbGrpcService {
             query = query.only_if(req.filter.trim());
         }
 
-        let output_schema = query.output_schema().await.map_err(to_status)?;
-        let stream = query.execute().await.map_err(to_status)?;
-        let batches: Vec<RecordBatch> = stream.try_collect().await.map_err(to_status)?;
+        let output_schema = match query.output_schema().await.map_err(to_status) {
+            Ok(schema) => schema,
+            Err(status) => {
+                log_request_failed(&context, &status);
+                return Err(status);
+            }
+        };
+        let stream = match query.execute().await.map_err(to_status) {
+            Ok(stream) => stream,
+            Err(status) => {
+                log_request_failed(&context, &status);
+                return Err(status);
+            }
+        };
+        let batches: Vec<RecordBatch> = match stream.try_collect().await.map_err(to_status) {
+            Ok(batches) => batches,
+            Err(status) => {
+                log_request_failed(&context, &status);
+                return Err(status);
+            }
+        };
         let rows = count_rows(&batches);
 
         let (format, data) = match output_format {
             OutputFormat::JsonRows => (
                 "json".to_string(),
-                encode_batches_as_json(&output_schema, &batches)?,
+                match encode_batches_as_json(&output_schema, &batches) {
+                    Ok(data) => data,
+                    Err(status) => {
+                        log_request_failed(&context, &status);
+                        return Err(status);
+                    }
+                },
             ),
             OutputFormat::Unspecified | OutputFormat::ArrowIpc => (
                 "arrow_ipc".to_string(),
-                encode_batches_as_arrow_ipc(&output_schema, &batches)?,
+                match encode_batches_as_arrow_ipc(&output_schema, &batches) {
+                    Ok(data) => data,
+                    Err(status) => {
+                        log_request_failed(&context, &status);
+                        return Err(status);
+                    }
+                },
             ),
         };
 
-        Ok(Response::new(SearchResponse {
+        let response = SearchResponse {
             success: true,
             message: "search completed".to_string(),
             format,
             rows,
             data,
-        }))
+        };
+        log_request_succeeded(
+            &context,
+            format!("{} rows encoded as {}", response.rows, response.format),
+        );
+        Ok(Response::new(response))
     }
 
     async fn delete(
         &self,
         request: Request<DeleteRequest>,
     ) -> Result<Response<DeleteResponse>, Status> {
+        let context = build_request_context(
+            &self.state.logger,
+            "delete",
+            request.remote_addr(),
+            format!(
+                "table={} condition=\"{}\"",
+                request.get_ref().table_name.trim(),
+                preview_text(
+                    request.get_ref().condition.trim(),
+                    self.state.logger.config().request_preview_chars
+                ),
+            ),
+        );
+        log_request_started(&context);
         let req = request.into_inner();
 
         if req.table_name.trim().is_empty() {
-            return Err(Status::invalid_argument("table_name must not be empty"));
+            let status = Status::invalid_argument("table_name must not be empty");
+            log_request_failed(&context, &status);
+            return Err(status);
         }
         if req.condition.trim().is_empty() {
-            return Err(Status::invalid_argument("condition must not be empty"));
+            let status = Status::invalid_argument("condition must not be empty");
+            log_request_failed(&context, &status);
+            return Err(status);
         }
 
-        let table = self.open_table(&req.table_name).await?;
-        let result = table
-            .delete(req.condition.trim())
-            .await
-            .map_err(to_status)?;
+        let table = match self.open_table(&req.table_name).await {
+            Ok(table) => table,
+            Err(status) => {
+                log_request_failed(&context, &status);
+                return Err(status);
+            }
+        };
+        let result = match table.delete(req.condition.trim()).await.map_err(to_status) {
+            Ok(result) => result,
+            Err(status) => {
+                log_request_failed(&context, &status);
+                return Err(status);
+            }
+        };
 
-        Ok(Response::new(DeleteResponse {
+        let response = DeleteResponse {
             success: true,
             message: format!("delete completed for '{}'", req.table_name),
             version: result.version,
             deleted_rows: result.num_deleted_rows,
-        }))
+        };
+        log_request_succeeded(&context, format!("deleted_rows={}", response.deleted_rows));
+        Ok(Response::new(response))
     }
 
     async fn drop_table(
         &self,
         request: Request<DropTableRequest>,
     ) -> Result<Response<DropTableResponse>, Status> {
+        let context = build_request_context(
+            &self.state.logger,
+            "drop_table",
+            request.remote_addr(),
+            format!("table={}", request.get_ref().table_name.trim()),
+        );
+        log_request_started(&context);
         let req = request.into_inner();
 
         if req.table_name.trim().is_empty() {
-            return Err(Status::invalid_argument("table_name must not be empty"));
+            let status = Status::invalid_argument("table_name must not be empty");
+            log_request_failed(&context, &status);
+            return Err(status);
         }
 
-        self.db
+        match self
+            .state
+            .db
             .drop_table(req.table_name.clone(), &[])
             .await
-            .map_err(to_status)?;
+            .map_err(to_status)
+        {
+            Ok(_) => {}
+            Err(status) => {
+                log_request_failed(&context, &status);
+                return Err(status);
+            }
+        }
 
-        Ok(Response::new(DropTableResponse {
+        let response = DropTableResponse {
             success: true,
             message: format!("table '{}' dropped", req.table_name),
-        }))
+        };
+        log_request_succeeded(&context, response.message.as_str());
+        Ok(Response::new(response))
     }
+}
+
+fn build_request_context(
+    logger: &Arc<ServiceLogger>,
+    operation: &'static str,
+    remote_addr: Option<std::net::SocketAddr>,
+    summary: String,
+) -> RequestLogContext {
+    let logging: &LoggingConfig = logger.config();
+    RequestLogContext {
+        request_id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
+        operation,
+        remote_addr: remote_addr
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        summary,
+        started_at: Instant::now(),
+        logger: Arc::clone(logger),
+        request_log_enabled: logging.request_log_enabled,
+        slow_request_log_enabled: logging.slow_request_log_enabled,
+        slow_request_threshold: Duration::from_millis(logging.slow_request_threshold_ms),
+        include_request_details_in_slow_log: logging.include_request_details_in_slow_log,
+    }
+}
+
+fn log_request_started(context: &RequestLogContext) {
+    if !context.request_log_enabled {
+        return;
+    }
+
+    context.logger.log(
+        "start",
+        format!(
+            "request_id={} op={} remote={} summary={}",
+            context.request_id, context.operation, context.remote_addr, context.summary
+        ),
+    );
+}
+
+fn log_request_succeeded(context: &RequestLogContext, detail: impl AsRef<str>) {
+    let elapsed = context.started_at.elapsed();
+    if context.request_log_enabled {
+        context.logger.log(
+            "ok",
+            format!(
+                "request_id={} op={} elapsed_ms={} remote={} detail={} summary={}",
+                context.request_id,
+                context.operation,
+                elapsed.as_millis(),
+                context.remote_addr,
+                detail.as_ref(),
+                context.summary,
+            ),
+        );
+    }
+    maybe_log_slow_request(context, elapsed, "completed", detail.as_ref());
+}
+
+fn log_request_failed(context: &RequestLogContext, status: &Status) {
+    let elapsed = context.started_at.elapsed();
+    context.logger.log(
+        "error",
+        format!(
+            "request_id={} op={} elapsed_ms={} remote={} code={:?} message={} summary={}",
+            context.request_id,
+            context.operation,
+            elapsed.as_millis(),
+            context.remote_addr,
+            status.code(),
+            status.message(),
+            context.summary,
+        ),
+    );
+    maybe_log_slow_request(context, elapsed, "failed", status.message());
+}
+
+fn maybe_log_slow_request(
+    context: &RequestLogContext,
+    elapsed: Duration,
+    final_state: &str,
+    detail: &str,
+) {
+    if !context.slow_request_log_enabled || elapsed < context.slow_request_threshold {
+        return;
+    }
+
+    let summary = if context.include_request_details_in_slow_log {
+        context.summary.as_str()
+    } else {
+        context.operation
+    };
+
+    context.logger.log(
+        "slow_request",
+        format!(
+            "request_id={} op={} elapsed_ms={} threshold_ms={} remote={} state={} detail={} summary={}",
+            context.request_id,
+            context.operation,
+            elapsed.as_millis(),
+            context.slow_request_threshold.as_millis(),
+            context.remote_addr,
+            final_state,
+            detail,
+            summary,
+        ),
+    );
+}
+
+fn preview_text(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return "<empty>".to_string();
+    }
+
+    let mut preview = String::new();
+    for (index, ch) in normalized.chars().enumerate() {
+        if index >= max_chars {
+            preview.push_str("...");
+            return preview;
+        }
+        preview.push(ch);
+    }
+
+    preview
 }
 
 fn build_arrow_schema(columns: &[ColumnDef]) -> Result<SchemaRef, Status> {
@@ -740,4 +1113,24 @@ fn count_rows(batches: &[RecordBatch]) -> u64 {
 
 fn to_status<E: std::fmt::Display>(error: E) -> Status {
     Status::internal(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preview_text;
+
+    #[test]
+    fn preview_text_compacts_whitespace_and_truncates() {
+        let preview = preview_text("table = demo\nfilter = id   > 1", 160);
+        assert_eq!(preview, "table = demo filter = id > 1");
+
+        let preview = preview_text(&format!("prefix {}", "x".repeat(300)), 24);
+        assert!(preview.ends_with("..."));
+        assert!(preview.len() >= 24);
+    }
+
+    #[test]
+    fn preview_text_marks_empty_input() {
+        assert_eq!(preview_text(" \n\t ", 64), "<empty>");
+    }
 }

@@ -22,7 +22,19 @@ URI-like `db_path` values containing `://` are used as-is.
 {
   "host": "127.0.0.1",
   "port": 50051,
-  "db_path": "./data"
+  "db_path": "./data",
+  "logging": {
+    "enabled": true,
+    "file_enabled": true,
+    "stderr_enabled": true,
+    "request_log_enabled": true,
+    "slow_request_log_enabled": true,
+    "slow_request_threshold_ms": 1000,
+    "include_request_details_in_slow_log": true,
+    "request_preview_chars": 160,
+    "log_dir": "",
+    "log_file_name": "vldb-lancedb.log"
+  }
 }
 ```
 
@@ -73,5 +85,7 @@ On Docker Desktop for Windows, a Docker named volume is the recommended data mou
 
 - Vector columns currently use fixed-size `float32` lists.
 - `Delete.condition` is passed directly to LanceDB as a predicate string.
+- When `logging.log_dir` is empty and `db_path` is local, request logs are written under `<db_path>/logs/`.
+- Slow request logging is enabled by default for requests that take 1000ms or longer.
 - Builds require `protoc` during Rust dependency compilation.
 - The Go example client under `examples/go-client/` covers create, upsert, search, delete, and drop-table flows.

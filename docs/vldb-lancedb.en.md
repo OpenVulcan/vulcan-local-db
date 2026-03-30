@@ -94,7 +94,19 @@ Default example:
 {
   "host": "127.0.0.1",
   "port": 50051,
-  "db_path": "./data"
+  "db_path": "./data",
+  "logging": {
+    "enabled": true,
+    "file_enabled": true,
+    "stderr_enabled": true,
+    "request_log_enabled": true,
+    "slow_request_log_enabled": true,
+    "slow_request_threshold_ms": 1000,
+    "include_request_details_in_slow_log": true,
+    "request_preview_chars": 160,
+    "log_dir": "",
+    "log_file_name": "vldb-lancedb.log"
+  }
 }
 ```
 
@@ -103,6 +115,16 @@ Fields:
 - `host`: gRPC bind host
 - `port`: gRPC bind port
 - `db_path`: LanceDB directory path or remote URI
+- `logging.enabled`: master switch for service request logging
+- `logging.file_enabled`: write logs to a file under the resolved log directory
+- `logging.stderr_enabled`: mirror logs to stderr
+- `logging.request_log_enabled`: emit per-request start / success / failure logs
+- `logging.slow_request_log_enabled`: emit slow-request logs when a request exceeds the threshold
+- `logging.slow_request_threshold_ms`: slow-request threshold in milliseconds, default `1000`
+- `logging.include_request_details_in_slow_log`: include request summary in slow-request logs
+- `logging.request_preview_chars`: maximum preview length for filter / request summaries
+- `logging.log_dir`: optional custom log directory; when empty and `db_path` is local, the service uses `<db_path>/logs/`
+- `logging.log_file_name`: log file name inside the resolved log directory
 
 Config discovery order:
 
@@ -118,6 +140,7 @@ Path handling:
 - relative local `db_path` values are resolved relative to the config file directory
 - URI-like values containing `://` are used as-is
 - local directories are created automatically if they do not exist
+- when `logging.log_dir` is empty and `db_path` is local, logs are stored under `<db_path>/logs/`
 
 ## How To Call The RPCs
 
@@ -279,4 +302,5 @@ The example runs:
 - JSON field types must match the table schema
 - JSON search output may include `_distance`
 - `Delete.condition` is passed through to LanceDB as a predicate string, so callers must provide a valid filter expression
+- request logging and slow-request logging are enabled by default
 - Rust builds will fail if `protoc` is missing

@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.24"
+$ScriptVersion = "0.1.25"
 $RepoSlug = "OpenVulcan/vulcan-local-db"
 $RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
@@ -1265,6 +1265,38 @@ function Restart-RegisteredServiceByNameIfRunning {
     return $true
 }
 
+function Get-DefaultLoggingConfig {
+    param([string]$Service)
+
+    if ($Service -eq "vldb-lancedb") {
+        return [ordered]@{
+            enabled = $true
+            file_enabled = $true
+            stderr_enabled = $true
+            request_log_enabled = $true
+            slow_request_log_enabled = $true
+            slow_request_threshold_ms = 1000
+            include_request_details_in_slow_log = $true
+            request_preview_chars = 160
+            log_dir = ""
+            log_file_name = "vldb-lancedb.log"
+        }
+    }
+
+    return [ordered]@{
+        enabled = $true
+        file_enabled = $true
+        stderr_enabled = $true
+        request_log_enabled = $true
+        slow_query_log_enabled = $true
+        slow_query_threshold_ms = 1000
+        slow_query_full_sql_enabled = $true
+        sql_preview_chars = 160
+        log_dir = ""
+        log_file_name = "vldb-duckdb.log"
+    }
+}
+
 function Write-ServiceConfig {
     param(
         [string]$Service,
@@ -1284,27 +1316,36 @@ function Write-ServiceConfig {
     }
 
     $configDir = Join-Path $script:InstallDir "config"
+    $configPath = Get-InstanceConfigPath $Service $Instance
+    $existingConfig = Read-InstanceConfig $configPath
+    $logging = if ($existingConfig -and $existingConfig.PSObject.Properties.Name -contains "logging" -and $existingConfig.logging) {
+        $existingConfig.logging
+    } else {
+        Get-DefaultLoggingConfig -Service $Service
+    }
     New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 
     if ($Service -eq "vldb-lancedb") {
         New-Item -ItemType Directory -Force -Path $DataPath | Out-Null
-        @{
+        [ordered]@{
             host = $BindHost
             port = $Port
             db_path = $DataPath
             service_name = $ServiceName
-        } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Get-InstanceConfigPath $Service $Instance)
+            logging = $logging
+        } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 $configPath
     } else {
         $dataDir = Split-Path -Parent $DataPath
         New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
-        @{
+        [ordered]@{
             host = $BindHost
             port = $Port
             db_path = $DataPath
             memory_limit = "2GB"
             threads = 4
             service_name = $ServiceName
-        } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Get-InstanceConfigPath $Service $Instance)
+            logging = $logging
+        } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 $configPath
     }
 }
 

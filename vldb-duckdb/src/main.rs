@@ -1,4 +1,5 @@
 mod config;
+mod logging;
 mod service;
 
 pub mod pb {
@@ -6,6 +7,7 @@ pub mod pb {
 }
 
 use crate::config::{BoxError, load_config};
+use crate::logging::ServiceLogger;
 use crate::pb::duck_db_service_server::DuckDbServiceServer;
 use crate::service::{DuckDbGrpcService, apply_connection_pragmas};
 use duckdb::Connection;
@@ -28,6 +30,8 @@ async fn main() -> Result<(), BoxError> {
         std::fs::create_dir_all(parent)?;
     }
 
+    let logger = ServiceLogger::new("vldb-duckdb", &config.logging)?;
+
     let conn = Connection::open(&config.db_path)?;
     apply_connection_pragmas(&conn, &config)?;
 
@@ -38,9 +42,14 @@ async fn main() -> Result<(), BoxError> {
         "memory_limit: {} | threads: {}",
         config.memory_limit, config.threads
     );
+    if let Some(log_path) = logger.log_path() {
+        println!("request log file: {}", log_path.display());
+    } else if config.logging.enabled {
+        println!("request log file: disabled");
+    }
     println!("gRPC listening on {addr}");
 
-    let svc = DuckDbGrpcService::new(conn, config.clone());
+    let svc = DuckDbGrpcService::new(conn, config.clone(), logger);
 
     Server::builder()
         .add_service(DuckDbServiceServer::new(svc))

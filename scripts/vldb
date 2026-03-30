@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.24"
+SCRIPT_VERSION="0.1.25"
 GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
@@ -1119,7 +1119,8 @@ write_service_config() {
   "host": "${host}",
   "port": ${port},
   "db_path": "${data_path}",
-  "service_name": "${service_name}"
+  "service_name": "${service_name}",
+$(service_logging_json_block "${service}" "${config_path}")
 }
 EOF
   else
@@ -1131,10 +1132,78 @@ EOF
   "db_path": "${data_path}",
   "memory_limit": "2GB",
   "threads": 4,
-  "service_name": "${service_name}"
+  "service_name": "${service_name}",
+$(service_logging_json_block "${service}" "${config_path}")
 }
 EOF
   fi
+}
+
+service_logging_json_block() {
+  local service="$1"
+  local config_path="$2"
+  local existing=""
+
+  if [[ -f "${config_path}" ]]; then
+    existing="$(extract_json_object_block "${config_path}" "logging" || true)"
+  fi
+
+  if [[ -n "${existing}" ]]; then
+    printf '%s\n' "${existing}"
+    return 0
+  fi
+
+  if [[ "${service}" == "vldb-lancedb" ]]; then
+    cat <<'EOF'
+  "logging": {
+    "enabled": true,
+    "file_enabled": true,
+    "stderr_enabled": true,
+    "request_log_enabled": true,
+    "slow_request_log_enabled": true,
+    "slow_request_threshold_ms": 1000,
+    "include_request_details_in_slow_log": true,
+    "request_preview_chars": 160,
+    "log_dir": "",
+    "log_file_name": "vldb-lancedb.log"
+  }
+EOF
+  else
+    cat <<'EOF'
+  "logging": {
+    "enabled": true,
+    "file_enabled": true,
+    "stderr_enabled": true,
+    "request_log_enabled": true,
+    "slow_query_log_enabled": true,
+    "slow_query_threshold_ms": 1000,
+    "slow_query_full_sql_enabled": true,
+    "sql_preview_chars": 160,
+    "log_dir": "",
+    "log_file_name": "vldb-duckdb.log"
+  }
+EOF
+  fi
+}
+
+extract_json_object_block() {
+  local file_path="$1"
+  local property_name="$2"
+
+  awk -v property="${property_name}" '
+    $0 ~ "\"" property "\"[[:space:]]*:[[:space:]]*\\{" && !capture {
+      capture = 1
+    }
+    capture {
+      print
+      opens = gsub(/\{/, "{")
+      closes = gsub(/\}/, "}")
+      depth += opens - closes
+      if (depth == 0) {
+        exit
+      }
+    }
+  ' "${file_path}"
 }
 
 config_host() {

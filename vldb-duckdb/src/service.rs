@@ -1,12 +1,13 @@
 use crate::config::Config;
+use crate::logging::ServiceLogger;
 use crate::pb::duck_db_service_server::DuckDbService;
 use crate::pb::{ExecuteRequest, ExecuteResponse, QueryJsonResponse, QueryRequest, QueryResponse};
 use arrow::ipc::writer::StreamWriter;
 use bytes::Bytes;
-use duckdb::{Connection, InterruptHandle};
 use duckdb::types::{
     TimeUnit as DuckTimeUnit, ToSql, Value as DuckValue, ValueRef as DuckValueRef,
 };
+use duckdb::{Connection, InterruptHandle};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use std::io;
 use std::io::Write;
@@ -20,14 +21,13 @@ use tonic::{Request, Response, Status};
 
 const STREAM_CHANNEL_CAPACITY: usize = 8;
 const DEFAULT_IPC_CHUNK_BYTES: usize = 1024 * 1024;
-const MAX_SQL_PREVIEW_CHARS: usize = 160;
-
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
 struct AppState {
     root_connection: Arc<Mutex<Connection>>,
     config: Config,
+    logger: Arc<ServiceLogger>,
 }
 
 #[derive(Clone, Debug)]
@@ -37,13 +37,19 @@ pub struct DuckDbGrpcService {
 
 #[derive(Clone, Debug)]
 struct RequestLogContext {
+    logger: Arc<ServiceLogger>,
     request_id: u64,
     operation: &'static str,
     remote_addr: Option<SocketAddr>,
     grpc_timeout: Option<Duration>,
     started_at: Instant,
+    sql_full: String,
     sql_preview: String,
     params_json_bytes: usize,
+    request_log_enabled: bool,
+    slow_query_log_enabled: bool,
+    slow_query_threshold: Duration,
+    slow_query_full_sql_enabled: bool,
 }
 
 struct WorkerCompletionSignal(Option<oneshot::Sender<()>>);
@@ -63,11 +69,12 @@ impl Drop for WorkerCompletionSignal {
 }
 
 impl DuckDbGrpcService {
-    pub fn new(root_connection: Connection, config: Config) -> Self {
+    pub fn new(root_connection: Connection, config: Config, logger: Arc<ServiceLogger>) -> Self {
         Self {
             state: Arc::new(AppState {
                 root_connection: Arc::new(Mutex::new(root_connection)),
                 config,
+                logger,
             }),
         }
     }
@@ -80,6 +87,7 @@ impl DuckDbService for DuckDbGrpcService {
         request: Request<ExecuteRequest>,
     ) -> Result<Response<ExecuteResponse>, Status> {
         let context = build_request_context(
+            &self.state,
             &request,
             "execute_script",
             request.get_ref().sql.as_str(),
@@ -131,6 +139,7 @@ impl DuckDbService for DuckDbGrpcService {
         request: Request<QueryRequest>,
     ) -> Result<Response<Self::QueryStreamStream>, Status> {
         let context = build_request_context(
+            &self.state,
             &request,
             "query_stream",
             request.get_ref().sql.as_str(),
@@ -183,12 +192,9 @@ impl DuckDbService for DuckDbGrpcService {
                     let _ = join_tx.send(Err(mapped)).await;
                 }
                 Err(err) => {
-                    let status =
-                        Status::internal(format!("query worker join failed: {err}"));
+                    let status = Status::internal(format!("query worker join failed: {err}"));
                     log_request_failed(&join_context, &status);
-                    let _ = join_tx
-                        .send(Err(status))
-                        .await;
+                    let _ = join_tx.send(Err(status)).await;
                 }
             }
         });
@@ -203,6 +209,7 @@ impl DuckDbService for DuckDbGrpcService {
         request: Request<QueryRequest>,
     ) -> Result<Response<QueryJsonResponse>, Status> {
         let context = build_request_context(
+            &self.state,
             &request,
             "query_json",
             request.get_ref().sql.as_str(),
@@ -449,10 +456,7 @@ fn run_query_json(
     match &result {
         Ok(response) => log_request_succeeded(
             &context,
-            format!(
-                "returned JSON payload ({} bytes)",
-                response.json_data.len()
-            ),
+            format!("returned JSON payload ({} bytes)", response.json_data.len()),
         ),
         Err(status) => log_request_failed(&context, status),
     }
@@ -620,12 +624,15 @@ fn status_internal<E: std::fmt::Display>(prefix: &str, error: E) -> Status {
 }
 
 fn build_request_context<T>(
+    state: &Arc<AppState>,
     request: &Request<T>,
     operation: &'static str,
     sql: &str,
     params_json: &str,
 ) -> RequestLogContext {
+    let logging = state.logger.config();
     RequestLogContext {
+        logger: Arc::clone(&state.logger),
         request_id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
         operation,
         remote_addr: request.remote_addr(),
@@ -635,8 +642,13 @@ fn build_request_context<T>(
             .and_then(|value| value.to_str().ok())
             .and_then(parse_grpc_timeout_header),
         started_at: Instant::now(),
-        sql_preview: preview_sql(sql),
+        sql_full: sql.trim().to_string(),
+        sql_preview: preview_sql(sql, logging.sql_preview_chars),
         params_json_bytes: params_json.len(),
+        request_log_enabled: logging.request_log_enabled,
+        slow_query_log_enabled: logging.slow_query_log_enabled,
+        slow_query_threshold: Duration::from_millis(logging.slow_query_threshold_ms),
+        slow_query_full_sql_enabled: logging.slow_query_full_sql_enabled,
     }
 }
 
@@ -677,7 +689,9 @@ fn remap_deadline_status_if_needed<T>(
 }
 
 fn remap_deadline_status(status: Status, deadline_triggered: &Arc<AtomicBool>) -> Status {
-    if deadline_triggered.load(Ordering::Relaxed) && status.message().to_ascii_lowercase().contains("interrupt") {
+    if deadline_triggered.load(Ordering::Relaxed)
+        && status.message().to_ascii_lowercase().contains("interrupt")
+    {
         return Status::deadline_exceeded(
             "DuckDB query exceeded the gRPC deadline and was interrupted",
         );
@@ -686,7 +700,7 @@ fn remap_deadline_status(status: Status, deadline_triggered: &Arc<AtomicBool>) -
     status
 }
 
-fn preview_sql(sql: &str) -> String {
+fn preview_sql(sql: &str, max_chars: usize) -> String {
     let normalized = sql.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
         return "<empty>".to_string();
@@ -694,7 +708,7 @@ fn preview_sql(sql: &str) -> String {
 
     let mut preview = String::new();
     for (index, ch) in normalized.chars().enumerate() {
-        if index >= MAX_SQL_PREVIEW_CHARS {
+        if index >= max_chars {
             preview.push_str("...");
             return preview;
         }
@@ -721,63 +735,122 @@ fn parse_grpc_timeout_header(raw: &str) -> Option<Duration> {
 }
 
 fn log_request_started(context: &RequestLogContext) {
-    eprintln!(
-        "[vldb-duckdb][start] request_id={} op={} remote={} grpc_timeout={} params_json_bytes={} sql=\"{}\"",
-        context.request_id,
-        context.operation,
-        format_remote_addr(context.remote_addr),
-        format_optional_duration(context.grpc_timeout),
-        context.params_json_bytes,
-        context.sql_preview,
+    if !context.request_log_enabled {
+        return;
+    }
+
+    context.logger.log(
+        "start",
+        format!(
+            "request_id={} op={} remote={} grpc_timeout={} params_json_bytes={} sql=\"{}\"",
+            context.request_id,
+            context.operation,
+            format_remote_addr(context.remote_addr),
+            format_optional_duration(context.grpc_timeout),
+            context.params_json_bytes,
+            context.sql_preview,
+        ),
     );
 }
 
 fn log_request_invalid_argument(context: &RequestLogContext, message: &str) {
-    eprintln!(
-        "[vldb-duckdb][invalid] request_id={} op={} elapsed_ms={} remote={} message={} sql=\"{}\"",
-        context.request_id,
-        context.operation,
-        context.started_at.elapsed().as_millis(),
-        format_remote_addr(context.remote_addr),
-        message,
-        context.sql_preview,
-    );
+    if context.request_log_enabled {
+        context.logger.log(
+            "invalid",
+            format!(
+                "request_id={} op={} elapsed_ms={} remote={} message={} sql=\"{}\"",
+                context.request_id,
+                context.operation,
+                context.started_at.elapsed().as_millis(),
+                format_remote_addr(context.remote_addr),
+                message,
+                context.sql_preview,
+            ),
+        );
+    }
 }
 
 fn log_request_timeout(context: &RequestLogContext) {
-    eprintln!(
-        "[vldb-duckdb][timeout] request_id={} op={} elapsed_ms={} remote={} grpc_timeout={} sql=\"{}\" message=interrupting running DuckDB query because the gRPC deadline expired",
-        context.request_id,
-        context.operation,
-        context.started_at.elapsed().as_millis(),
-        format_remote_addr(context.remote_addr),
-        format_optional_duration(context.grpc_timeout),
-        context.sql_preview,
+    context.logger.log(
+        "timeout",
+        format!(
+            "request_id={} op={} elapsed_ms={} remote={} grpc_timeout={} sql=\"{}\" message=interrupting running DuckDB query because the gRPC deadline expired",
+            context.request_id,
+            context.operation,
+            context.started_at.elapsed().as_millis(),
+            format_remote_addr(context.remote_addr),
+            format_optional_duration(context.grpc_timeout),
+            context.sql_preview,
+        ),
     );
 }
 
 fn log_request_succeeded(context: &RequestLogContext, detail: impl AsRef<str>) {
-    eprintln!(
-        "[vldb-duckdb][ok] request_id={} op={} elapsed_ms={} remote={} detail={} sql=\"{}\"",
-        context.request_id,
-        context.operation,
-        context.started_at.elapsed().as_millis(),
-        format_remote_addr(context.remote_addr),
-        detail.as_ref(),
-        context.sql_preview,
-    );
+    let elapsed = context.started_at.elapsed();
+    if context.request_log_enabled {
+        context.logger.log(
+            "ok",
+            format!(
+                "request_id={} op={} elapsed_ms={} remote={} detail={} sql=\"{}\"",
+                context.request_id,
+                context.operation,
+                elapsed.as_millis(),
+                format_remote_addr(context.remote_addr),
+                detail.as_ref(),
+                context.sql_preview,
+            ),
+        );
+    }
+    maybe_log_slow_query(context, elapsed, "completed", detail.as_ref());
 }
 
 fn log_request_failed(context: &RequestLogContext, status: &Status) {
-    eprintln!(
-        "[vldb-duckdb][error] request_id={} op={} elapsed_ms={} remote={} code={:?} message={} sql=\"{}\"",
-        context.request_id,
-        context.operation,
-        context.started_at.elapsed().as_millis(),
-        format_remote_addr(context.remote_addr),
-        status.code(),
-        status.message(),
-        context.sql_preview,
+    let elapsed = context.started_at.elapsed();
+    context.logger.log(
+        "error",
+        format!(
+            "request_id={} op={} elapsed_ms={} remote={} code={:?} message={} sql=\"{}\"",
+            context.request_id,
+            context.operation,
+            elapsed.as_millis(),
+            format_remote_addr(context.remote_addr),
+            status.code(),
+            status.message(),
+            context.sql_preview,
+        ),
+    );
+    maybe_log_slow_query(context, elapsed, "failed", status.message());
+}
+
+fn maybe_log_slow_query(
+    context: &RequestLogContext,
+    elapsed: Duration,
+    final_state: &str,
+    detail: &str,
+) {
+    if !context.slow_query_log_enabled || elapsed < context.slow_query_threshold {
+        return;
+    }
+
+    let sql_text = if context.slow_query_full_sql_enabled {
+        context.sql_full.as_str()
+    } else {
+        context.sql_preview.as_str()
+    };
+
+    context.logger.log(
+        "slow_query",
+        format!(
+            "request_id={} op={} elapsed_ms={} threshold_ms={} remote={} state={} detail={} sql=\"{}\"",
+            context.request_id,
+            context.operation,
+            elapsed.as_millis(),
+            context.slow_query_threshold.as_millis(),
+            format_remote_addr(context.remote_addr),
+            final_state,
+            detail,
+            sql_text,
+        ),
     );
 }
 
@@ -886,12 +959,30 @@ mod tests {
 
     #[test]
     fn parse_grpc_timeout_supports_all_units() {
-        assert_eq!(parse_grpc_timeout_header("2H"), Some(Duration::from_secs(7200)));
-        assert_eq!(parse_grpc_timeout_header("3M"), Some(Duration::from_secs(180)));
-        assert_eq!(parse_grpc_timeout_header("4S"), Some(Duration::from_secs(4)));
-        assert_eq!(parse_grpc_timeout_header("5m"), Some(Duration::from_millis(5)));
-        assert_eq!(parse_grpc_timeout_header("6u"), Some(Duration::from_micros(6)));
-        assert_eq!(parse_grpc_timeout_header("7n"), Some(Duration::from_nanos(7)));
+        assert_eq!(
+            parse_grpc_timeout_header("2H"),
+            Some(Duration::from_secs(7200))
+        );
+        assert_eq!(
+            parse_grpc_timeout_header("3M"),
+            Some(Duration::from_secs(180))
+        );
+        assert_eq!(
+            parse_grpc_timeout_header("4S"),
+            Some(Duration::from_secs(4))
+        );
+        assert_eq!(
+            parse_grpc_timeout_header("5m"),
+            Some(Duration::from_millis(5))
+        );
+        assert_eq!(
+            parse_grpc_timeout_header("6u"),
+            Some(Duration::from_micros(6))
+        );
+        assert_eq!(
+            parse_grpc_timeout_header("7n"),
+            Some(Duration::from_nanos(7))
+        );
     }
 
     #[test]
@@ -903,11 +994,11 @@ mod tests {
 
     #[test]
     fn preview_sql_compacts_whitespace_and_truncates() {
-        let preview = preview_sql("select   *\nfrom   demo\twhere id = 1");
+        let preview = preview_sql("select   *\nfrom   demo\twhere id = 1", 160);
         assert_eq!(preview, "select * from demo where id = 1");
 
         let long_sql = format!("select {}", "x".repeat(300));
-        let preview = preview_sql(&long_sql);
+        let preview = preview_sql(&long_sql, 32);
         assert!(preview.ends_with("..."));
         assert!(preview.len() > 10);
     }

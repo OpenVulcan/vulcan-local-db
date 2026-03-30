@@ -22,7 +22,19 @@ Absolute paths and `~` are supported.
   "port": 50052,
   "db_path": "./data/duckdb.db",
   "memory_limit": "2GB",
-  "threads": 4
+  "threads": 4,
+  "logging": {
+    "enabled": true,
+    "file_enabled": true,
+    "stderr_enabled": true,
+    "request_log_enabled": true,
+    "slow_query_log_enabled": true,
+    "slow_query_threshold_ms": 1000,
+    "slow_query_full_sql_enabled": true,
+    "sql_preview_chars": 160,
+    "log_dir": "",
+    "log_file_name": "vldb-duckdb.log"
+  }
 }
 ```
 
@@ -71,8 +83,10 @@ The image uses `docker/vldb-duckdb.json`, whose Docker-specific `db_path` is `/a
 
 - The root `duckdb::Connection` is stored behind `Arc<Mutex<Connection>>`, but each request clones a dedicated DuckDB connection with `try_clone()` so the mutex is only held briefly.
 - All blocking DuckDB work runs inside `tokio::task::spawn_blocking`.
+- When `logging.log_dir` is empty, the server creates a sibling directory named after the DuckDB file stem, for example `./data/duckdb.db` -> `./data/duckdb/`.
 - If the client sends `grpc-timeout`, the server now logs that deadline and interrupts the running DuckDB query when the deadline expires.
 - Each request now logs request type, remote address, timeout, SQL preview, elapsed time, and final status to help diagnose intermittent timeouts.
+- Slow SQL logging is enabled by default for requests that take 1000ms or longer.
 - Arrow IPC bytes are chunked in-process to avoid building the full stream in memory before sending.
 - Small result sets such as `count(*)` can use `QueryJson` instead of Arrow IPC.
 - `memory_limit` and `threads` are applied on startup and again on per-request cloned connections.

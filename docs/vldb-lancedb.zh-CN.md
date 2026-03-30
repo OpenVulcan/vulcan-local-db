@@ -94,7 +94,19 @@ docker run -d \
 {
   "host": "127.0.0.1",
   "port": 50051,
-  "db_path": "./data"
+  "db_path": "./data",
+  "logging": {
+    "enabled": true,
+    "file_enabled": true,
+    "stderr_enabled": true,
+    "request_log_enabled": true,
+    "slow_request_log_enabled": true,
+    "slow_request_threshold_ms": 1000,
+    "include_request_details_in_slow_log": true,
+    "request_preview_chars": 160,
+    "log_dir": "",
+    "log_file_name": "vldb-lancedb.log"
+  }
 }
 ```
 
@@ -103,6 +115,16 @@ docker run -d \
 - `host`：gRPC 监听地址
 - `port`：gRPC 监听端口
 - `db_path`：LanceDB 数据目录或远程 URI
+- `logging.enabled`：服务日志总开关
+- `logging.file_enabled`：是否写入日志文件
+- `logging.stderr_enabled`：是否同时输出到标准错误
+- `logging.request_log_enabled`：是否记录每次请求的开始、成功和失败日志
+- `logging.slow_request_log_enabled`：是否记录慢请求日志
+- `logging.slow_request_threshold_ms`：慢请求阈值，单位毫秒，默认 `1000`
+- `logging.include_request_details_in_slow_log`：慢请求日志是否带上请求摘要
+- `logging.request_preview_chars`：请求摘要预览最大长度
+- `logging.log_dir`：可选自定义日志目录；为空且 `db_path` 为本地目录时，默认使用 `<db_path>/logs/`
+- `logging.log_file_name`：日志文件名
 
 配置发现顺序：
 
@@ -118,6 +140,7 @@ docker run -d \
 - 如果 `db_path` 是本地相对路径，会以配置文件所在目录为基准解析
 - 如果 `db_path` 看起来像 URI，例如包含 `://`，则直接按原值使用
 - 本地目录不存在时，服务会自动创建
+- `logging.log_dir` 为空且 `db_path` 为本地目录时，日志默认写入 `<db_path>/logs/`
 
 ## 如何调用函数
 
@@ -279,4 +302,5 @@ go run .
 - JSON 导入时字段类型必须与表结构匹配
 - `VectorSearch` 返回 JSON 时，结果中可能包含 `_distance`
 - `Delete.condition` 会直接传给 LanceDB 作为过滤表达式，调用方需要自己保证条件字符串正确
+- 默认启用请求日志和慢请求日志
 - 编译环境缺少 `protoc` 时，Rust 构建会失败

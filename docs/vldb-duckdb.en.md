@@ -92,7 +92,19 @@ Default example:
   "port": 50052,
   "db_path": "./data/duckdb.db",
   "memory_limit": "2GB",
-  "threads": 4
+  "threads": 4,
+  "logging": {
+    "enabled": true,
+    "file_enabled": true,
+    "stderr_enabled": true,
+    "request_log_enabled": true,
+    "slow_query_log_enabled": true,
+    "slow_query_threshold_ms": 1000,
+    "slow_query_full_sql_enabled": true,
+    "sql_preview_chars": 160,
+    "log_dir": "",
+    "log_file_name": "vldb-duckdb.log"
+  }
 }
 ```
 
@@ -103,6 +115,16 @@ Fields:
 - `db_path`: DuckDB database file path
 - `memory_limit`: DuckDB `PRAGMA memory_limit`
 - `threads`: DuckDB `PRAGMA threads`
+- `logging.enabled`: master switch for service request logging
+- `logging.file_enabled`: write logs to a file under the resolved log directory
+- `logging.stderr_enabled`: mirror logs to stderr
+- `logging.request_log_enabled`: emit per-request start / success / failure logs
+- `logging.slow_query_log_enabled`: emit slow-query logs when a request exceeds the threshold
+- `logging.slow_query_threshold_ms`: slow-query threshold in milliseconds, default `1000`
+- `logging.slow_query_full_sql_enabled`: log the full SQL text instead of only the preview for slow queries
+- `logging.sql_preview_chars`: maximum SQL preview length for normal request logs
+- `logging.log_dir`: optional custom log directory; when empty, the service uses a sibling directory based on the DuckDB file stem
+- `logging.log_file_name`: log file name inside the resolved log directory
 
 Config discovery order:
 
@@ -116,6 +138,7 @@ Path handling:
 - relative `db_path` values are resolved relative to the config file directory
 - absolute paths are supported
 - `~` is supported
+- when `logging.log_dir` is empty, `./data/duckdb.db` resolves logs to `./data/duckdb/`
 
 ## How To Call The RPCs
 
@@ -231,5 +254,6 @@ The example client:
 - `QueryStream` returns Arrow IPC bytes, not JSON
 - the service clones a dedicated DuckDB connection per request
 - `memory_limit` and `threads` are applied on startup and on cloned request connections
+- request logging and slow-query logging are enabled by default
 - there is no built-in auth, ACL, or TLS layer
 - clients should consume the full stream to receive the complete result

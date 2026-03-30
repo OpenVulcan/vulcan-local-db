@@ -7,12 +7,30 @@ use std::path::{Path, PathBuf};
 const DEFAULT_CONFIG_FILE: &str = "vldb-lancedb.json";
 const LEGACY_CONFIG_FILE: &str = "lancedb.json";
 
+pub type BoxError = Box<dyn Error + Send + Sync + 'static>;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub host: String,
     pub port: u16,
     pub db_path: String,
+    pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LoggingConfig {
+    pub enabled: bool,
+    pub file_enabled: bool,
+    pub stderr_enabled: bool,
+    pub request_log_enabled: bool,
+    pub slow_request_log_enabled: bool,
+    pub slow_request_threshold_ms: u64,
+    pub include_request_details_in_slow_log: bool,
+    pub request_preview_chars: usize,
+    pub log_dir: PathBuf,
+    pub log_file_name: String,
 }
 
 impl Default for Config {
@@ -21,6 +39,24 @@ impl Default for Config {
             host: "127.0.0.1".to_string(),
             port: 50051,
             db_path: "./data".to_string(),
+            logging: LoggingConfig::default(),
+        }
+    }
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            file_enabled: true,
+            stderr_enabled: true,
+            request_log_enabled: true,
+            slow_request_log_enabled: true,
+            slow_request_threshold_ms: 1_000,
+            include_request_details_in_slow_log: true,
+            request_preview_chars: 160,
+            log_dir: PathBuf::new(),
+            log_file_name: "vldb-lancedb.log".to_string(),
         }
     }
 }
@@ -31,6 +67,7 @@ pub struct ResolvedConfig {
     pub port: u16,
     pub db_path: String,
     pub source: Option<PathBuf>,
+    pub logging: LoggingConfig,
 }
 
 impl ResolvedConfig {
@@ -39,11 +76,11 @@ impl ResolvedConfig {
     }
 }
 
-pub fn load() -> Result<ResolvedConfig, Box<dyn Error>> {
+pub fn load() -> Result<ResolvedConfig, BoxError> {
     let explicit_config = parse_config_arg()?;
     let config_path = explicit_config.or(find_default_config_file()?);
 
-    let (config, source) = match config_path {
+    let (mut config, source) = match config_path {
         Some(path) => {
             let content = fs::read_to_string(&path)?;
             let config: Config = serde_json::from_str(&content)?;
@@ -58,22 +95,53 @@ pub fn load() -> Result<ResolvedConfig, Box<dyn Error>> {
         .unwrap_or(env::current_dir()?);
 
     let resolved_db_path = resolve_data_path(&config.db_path, &base_dir);
+    config.logging.log_dir = resolve_log_dir(&config.logging.log_dir, &resolved_db_path, &base_dir);
+    validate_config(&config)?;
 
     Ok(ResolvedConfig {
         host: config.host,
         port: config.port,
         db_path: resolved_db_path,
         source,
+        logging: config.logging,
     })
 }
 
-fn parse_config_arg() -> Result<Option<PathBuf>, Box<dyn Error>> {
+fn validate_config(config: &Config) -> Result<(), BoxError> {
+    if config.host.trim().is_empty() {
+        return Err(invalid_input("config.host must not be empty"));
+    }
+    if config.port == 0 {
+        return Err(invalid_input("config.port must be greater than 0"));
+    }
+    if config.db_path.trim().is_empty() {
+        return Err(invalid_input("config.db_path must not be empty"));
+    }
+    if config.logging.request_preview_chars == 0 {
+        return Err(invalid_input(
+            "config.logging.request_preview_chars must be greater than 0",
+        ));
+    }
+    if config.logging.slow_request_threshold_ms == 0 {
+        return Err(invalid_input(
+            "config.logging.slow_request_threshold_ms must be greater than 0",
+        ));
+    }
+    if config.logging.file_enabled && config.logging.log_file_name.trim().is_empty() {
+        return Err(invalid_input(
+            "config.logging.log_file_name must not be empty when file logging is enabled",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_config_arg() -> Result<Option<PathBuf>, BoxError> {
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "-config" || arg == "--config" {
             let next = args
                 .next()
-                .ok_or("missing value after -config / --config")?;
+                .ok_or_else(|| invalid_input("missing value after -config / --config"))?;
             let current_dir = env::current_dir()?;
             return Ok(Some(resolve_path_like_shell(&next, &current_dir)));
         }
@@ -81,7 +149,7 @@ fn parse_config_arg() -> Result<Option<PathBuf>, Box<dyn Error>> {
     Ok(None)
 }
 
-fn find_default_config_file() -> Result<Option<PathBuf>, Box<dyn Error>> {
+fn find_default_config_file() -> Result<Option<PathBuf>, BoxError> {
     let mut candidates = Vec::new();
 
     if let Ok(current_exe) = env::current_exe()
@@ -108,6 +176,19 @@ fn resolve_data_path(raw: &str, base_dir: &Path) -> String {
         .to_string()
 }
 
+fn resolve_log_dir(configured_dir: &Path, db_path: &str, base_dir: &Path) -> PathBuf {
+    if !configured_dir.as_os_str().is_empty() {
+        return resolve_path_like_shell(&configured_dir.to_string_lossy(), base_dir);
+    }
+
+    if looks_like_uri(db_path) {
+        return base_dir.join("vldb-lancedb-logs");
+    }
+
+    let db_path = PathBuf::from(db_path);
+    db_path.join("logs")
+}
+
 fn resolve_path_like_shell(raw: &str, base_dir: &Path) -> PathBuf {
     let expanded = expand_tilde(raw);
     let path = PathBuf::from(expanded);
@@ -130,6 +211,12 @@ fn expand_tilde(raw: &str) -> String {
         return PathBuf::from(home).join(rest).to_string_lossy().to_string();
     }
 
+    if let Some(rest) = raw.strip_prefix("~\\")
+        && let Some(home) = home_dir_string()
+    {
+        return PathBuf::from(home).join(rest).to_string_lossy().to_string();
+    }
+
     raw.to_string()
 }
 
@@ -141,4 +228,40 @@ fn home_dir_string() -> Option<String> {
 
 fn looks_like_uri(value: &str) -> bool {
     value.contains("://")
+}
+
+fn invalid_input(message: impl Into<String>) -> BoxError {
+    Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        message.into(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_log_dir;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn default_log_dir_uses_logs_subdir_for_local_db_path() {
+        let resolved = resolve_log_dir(Path::new(""), "/srv/vldb/lancedb", Path::new("/etc/vldb"));
+        assert_eq!(resolved, PathBuf::from("/srv/vldb/lancedb/logs"));
+    }
+
+    #[test]
+    fn explicit_relative_log_dir_is_resolved_from_config_dir() {
+        let resolved = resolve_log_dir(
+            Path::new("./logs"),
+            "/srv/vldb/lancedb",
+            Path::new("/etc/vldb"),
+        );
+        assert_eq!(resolved, PathBuf::from("/etc/vldb/logs"));
+    }
+
+    #[test]
+    fn uri_db_path_falls_back_to_config_relative_log_dir() {
+        let resolved =
+            resolve_log_dir(Path::new(""), "s3://bucket/lancedb", Path::new("/etc/vldb"));
+        assert_eq!(resolved, PathBuf::from("/etc/vldb/vldb-lancedb-logs"));
+    }
 }
