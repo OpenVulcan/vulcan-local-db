@@ -892,6 +892,10 @@ fn finalize_request_failure(
             error_message,
             commit_outcome_uncertain,
         } => {
+            if uses_explicit_transaction(context.sql_full.as_str()) {
+                best_effort_rollback(context, conn_slot);
+            }
+
             if !should_reset_shared_connection(&error_message) {
                 return status_internal(prefix, error_message);
             }
@@ -937,9 +941,63 @@ fn finalize_request_failure(
 }
 
 fn should_reset_shared_connection(error_message: &str) -> bool {
-    error_message
-        .to_ascii_lowercase()
-        .contains("resource deadlock would occur")
+    let lowered = error_message.to_ascii_lowercase();
+    lowered.contains("resource deadlock would occur")
+        || lowered.contains("database has been invalidated because of a previous fatal error")
+        || lowered.contains("database has been invalidated")
+        || lowered.contains("database is in restricted mode")
+}
+
+fn uses_explicit_transaction(sql: &str) -> bool {
+    sql.split(';').any(|statement| {
+        let trimmed = statement.trim_start().to_ascii_lowercase();
+        trimmed.starts_with("begin")
+            || trimmed.starts_with("start transaction")
+            || trimmed.starts_with("begin transaction")
+            || trimmed.starts_with("begin work")
+    })
+}
+
+fn best_effort_rollback(context: &RequestLogContext, conn_slot: &mut Option<Connection>) {
+    let Some(conn) = conn_slot.as_mut() else {
+        return;
+    };
+
+    match conn.execute_batch("ROLLBACK") {
+        Ok(()) => {
+            context.logger.log(
+                "recover",
+                format!(
+                    "request_id={} op={} stage={} detail=issued best-effort ROLLBACK after DuckDB error in explicit transaction batch",
+                    context.request_id,
+                    context.operation,
+                    context.progress.snapshot(),
+                ),
+            );
+        }
+        Err(err) => {
+            if is_no_active_transaction_error(err.to_string().as_str()) {
+                return;
+            }
+
+            context.logger.log(
+                "recover_error",
+                format!(
+                    "request_id={} op={} stage={} detail=best-effort ROLLBACK after DuckDB error failed rollback_error=\"{}\"",
+                    context.request_id,
+                    context.operation,
+                    context.progress.snapshot(),
+                    err,
+                ),
+            );
+        }
+    }
+}
+
+fn is_no_active_transaction_error(error_message: &str) -> bool {
+    let lowered = error_message.to_ascii_lowercase();
+    lowered.contains("no transaction is active")
+        || lowered.contains("cannot rollback - no transaction is active")
 }
 
 fn reopen_shared_connection(
@@ -1319,7 +1377,7 @@ impl Write for GrpcChunkWriter {
 mod tests {
     use super::{
         apply_connection_pragmas, parse_grpc_timeout_header, preview_sql, reopen_shared_connection,
-        should_reset_shared_connection, sql_string_list,
+        should_reset_shared_connection, sql_string_list, uses_explicit_transaction,
     };
     use crate::config::Config;
     use duckdb::Connection;
@@ -1382,12 +1440,31 @@ mod tests {
         assert!(should_reset_shared_connection(
             "Invalid Error: resource deadlock would occur"
         ));
+        assert!(should_reset_shared_connection(
+            "FATAL Error: database has been invalidated because of a previous fatal error. The database must be restarted prior to being used again."
+        ));
+        assert!(should_reset_shared_connection(
+            "FATAL Error: database is in restricted mode"
+        ));
     }
 
     #[test]
     fn reset_detection_ignores_regular_errors() {
         assert!(!should_reset_shared_connection(
             "Catalog Error: Table with name demo does not exist"
+        ));
+    }
+
+    #[test]
+    fn explicit_transaction_detection_matches_common_batch_shapes() {
+        assert!(uses_explicit_transaction(
+            "BEGIN TRANSACTION; INSERT INTO demo VALUES (1); COMMIT;"
+        ));
+        assert!(uses_explicit_transaction(
+            "SELECT 1;\nBEGIN;\nUPDATE demo SET value = 2;\nCOMMIT;"
+        ));
+        assert!(!uses_explicit_transaction(
+            "SELECT 'begin transaction' AS demo"
         ));
     }
 
