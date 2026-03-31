@@ -83,7 +83,8 @@ The image uses `docker/vldb-duckdb.json`, whose Docker-specific `db_path` is `/a
 
 - The service keeps one shared DuckDB connection open for the configured database path and serializes request execution through that single connection.
 - All blocking DuckDB work runs inside `tokio::task::spawn_blocking`.
-- When `logging.log_dir` is empty, the server creates a sibling directory named after the DuckDB file stem, for example `./data/duckdb.db` -> `./data/duckdb/`.
+- When `logging.log_dir` is empty, the server creates a sibling directory with a `_log` suffix, for example `./data/duckdb.db` -> `./data/duckdb_log/`.
+- The configured `logging.log_file_name` is treated as the base name, and the service writes daily log files such as `vldb-duckdb_2026-03-31.log`.
 - If the client sends `grpc-timeout`, the server now logs that deadline and interrupts the running DuckDB query when the deadline expires.
 - Each request now logs request type, remote address, timeout, SQL preview, stage, elapsed time, and final status to help diagnose intermittent timeouts and shared-connection queueing.
 - Slow SQL logging is enabled by default for requests that take 1000ms or longer.

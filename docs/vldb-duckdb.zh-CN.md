@@ -123,8 +123,8 @@ docker run -d \
 - `logging.slow_query_threshold_ms`：慢 SQL 阈值，单位毫秒，默认 `1000`
 - `logging.slow_query_full_sql_enabled`：慢 SQL 日志是否输出完整 SQL
 - `logging.sql_preview_chars`：普通请求日志里的 SQL 预览最大长度
-- `logging.log_dir`：可选自定义日志目录；为空时会自动使用 DuckDB 文件同级、同名目录
-- `logging.log_file_name`：日志文件名
+- `logging.log_dir`：可选自定义日志目录；为空时会自动使用 DuckDB 文件同级、带 `_log` 后缀的目录
+- `logging.log_file_name`：日志基础文件名；服务会在扩展名前自动追加本地日期
 
 配置发现顺序：
 
@@ -138,7 +138,8 @@ docker run -d \
 - 配置文件中的相对 `db_path` 以配置文件所在目录为基准计算
 - 支持绝对路径
 - 支持 `~`
-- `logging.log_dir` 为空时，`./data/duckdb.db` 会把日志写到 `./data/duckdb/`
+- `logging.log_dir` 为空时，`./data/duckdb.db` 会把日志写到 `./data/duckdb_log/`
+- 每天的日志文件会按 `vldb-duckdb_YYYY-MM-DD.log` 这样的形式分离
 
 ## 如何调用函数
 

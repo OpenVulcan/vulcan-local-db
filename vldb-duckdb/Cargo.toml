@@ -1,6 +1,6 @@
 [package]
 name = "vldb-duckdb"
-version = "0.1.3"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.94"
 build = "build.rs"
@@ -8,6 +8,7 @@ build = "build.rs"
 [dependencies]
 arrow = { version = "58.1.0", default-features = false, features = ["ipc"] }
 bytes = "1.11.1"
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 duckdb = { version = "1.10501.0", features = ["bundled"] }
 prost = "0.14.3"
 serde = { version = "1.0.228", features = ["derive"] }

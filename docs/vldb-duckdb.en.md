@@ -123,8 +123,8 @@ Fields:
 - `logging.slow_query_threshold_ms`: slow-query threshold in milliseconds, default `1000`
 - `logging.slow_query_full_sql_enabled`: log the full SQL text instead of only the preview for slow queries
 - `logging.sql_preview_chars`: maximum SQL preview length for normal request logs
-- `logging.log_dir`: optional custom log directory; when empty, the service uses a sibling directory based on the DuckDB file stem
-- `logging.log_file_name`: log file name inside the resolved log directory
+- `logging.log_dir`: optional custom log directory; when empty, the service uses a sibling directory with a `_log` suffix based on the DuckDB file stem
+- `logging.log_file_name`: base log file name; the service appends the local date before the extension
 
 Config discovery order:
 
@@ -138,7 +138,8 @@ Path handling:
 - relative `db_path` values are resolved relative to the config file directory
 - absolute paths are supported
 - `~` is supported
-- when `logging.log_dir` is empty, `./data/duckdb.db` resolves logs to `./data/duckdb/`
+- when `logging.log_dir` is empty, `./data/duckdb.db` resolves logs to `./data/duckdb_log/`
+- daily log files are written as `vldb-duckdb_YYYY-MM-DD.log`
 
 ## How To Call The RPCs
 

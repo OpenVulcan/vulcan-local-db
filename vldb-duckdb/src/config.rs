@@ -228,8 +228,8 @@ fn derive_default_log_dir(db_path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."));
 
     match db_path.file_stem().or_else(|| db_path.file_name()) {
-        Some(stem) => parent.join(stem),
-        None => parent.join("duckdb"),
+        Some(stem) => parent.join(format!("{}_log", stem.to_string_lossy())),
+        None => parent.join("duckdb_log"),
     }
 }
 
@@ -301,7 +301,7 @@ mod tests {
         let db_path = PathBuf::from("/srv/vldb/duckdb.db");
         assert_eq!(
             derive_default_log_dir(&db_path),
-            PathBuf::from("/srv/vldb/duckdb")
+            PathBuf::from("/srv/vldb/duckdb_log")
         );
     }
 

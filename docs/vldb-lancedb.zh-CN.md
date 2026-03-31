@@ -124,7 +124,7 @@ docker run -d \
 - `logging.include_request_details_in_slow_log`：慢请求日志是否带上请求摘要
 - `logging.request_preview_chars`：请求摘要预览最大长度
 - `logging.log_dir`：可选自定义日志目录；为空且 `db_path` 为本地目录时，默认使用 `<db_path>/logs/`
-- `logging.log_file_name`：日志文件名
+- `logging.log_file_name`：日志基础文件名；服务会在扩展名前自动追加本地日期
 
 配置发现顺序：
 
@@ -141,6 +141,7 @@ docker run -d \
 - 如果 `db_path` 看起来像 URI，例如包含 `://`，则直接按原值使用
 - 本地目录不存在时，服务会自动创建
 - `logging.log_dir` 为空且 `db_path` 为本地目录时，日志默认写入 `<db_path>/logs/`
+- 每天的日志文件会按 `vldb-lancedb_YYYY-MM-DD.log` 这样的形式分离
 
 ## 如何调用函数
 

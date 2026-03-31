@@ -124,7 +124,7 @@ Fields:
 - `logging.include_request_details_in_slow_log`: include request summary in slow-request logs
 - `logging.request_preview_chars`: maximum preview length for filter / request summaries
 - `logging.log_dir`: optional custom log directory; when empty and `db_path` is local, the service uses `<db_path>/logs/`
-- `logging.log_file_name`: log file name inside the resolved log directory
+- `logging.log_file_name`: base log file name; the service appends the local date before the extension
 
 Config discovery order:
 
@@ -141,6 +141,7 @@ Path handling:
 - URI-like values containing `://` are used as-is
 - local directories are created automatically if they do not exist
 - when `logging.log_dir` is empty and `db_path` is local, logs are stored under `<db_path>/logs/`
+- daily log files are written as `vldb-lancedb_YYYY-MM-DD.log`
 
 ## How To Call The RPCs
 

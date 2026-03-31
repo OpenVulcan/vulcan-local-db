@@ -86,6 +86,7 @@ On Docker Desktop for Windows, a Docker named volume is the recommended data mou
 - Vector columns currently use fixed-size `float32` lists.
 - `Delete.condition` is passed directly to LanceDB as a predicate string.
 - When `logging.log_dir` is empty and `db_path` is local, request logs are written under `<db_path>/logs/`.
+- The configured `logging.log_file_name` is treated as the base name, and the service writes daily log files such as `vldb-lancedb_2026-03-31.log`.
 - Slow request logging is enabled by default for requests that take 1000ms or longer.
 - Builds require `protoc` during Rust dependency compilation.
 - The Go example client under `examples/go-client/` covers create, upsert, search, delete, and drop-table flows.
