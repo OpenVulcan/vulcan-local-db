@@ -6,3 +6,4 @@
 **/*.exe
 **/*.pdb
 /docker-data/
+/vldb-sqlite/
