@@ -15,7 +15,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
@@ -25,7 +25,8 @@ static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
 struct AppState {
-    config: Config,
+    root_connection: Arc<Mutex<Connection>>,
+    execution_gate: Arc<Semaphore>,
     logger: Arc<ServiceLogger>,
 }
 
@@ -92,9 +93,13 @@ impl Drop for WorkerCompletionSignal {
 }
 
 impl DuckDbGrpcService {
-    pub fn new(config: Config, logger: Arc<ServiceLogger>) -> Self {
+    pub fn new(root_connection: Connection, logger: Arc<ServiceLogger>) -> Self {
         Self {
-            state: Arc::new(AppState { config, logger }),
+            state: Arc::new(AppState {
+                root_connection: Arc::new(Mutex::new(root_connection)),
+                execution_gate: Arc::new(Semaphore::new(1)),
+                logger,
+            }),
         }
     }
 }
@@ -121,6 +126,9 @@ impl DuckDbService for DuckDbGrpcService {
             return Err(Status::invalid_argument("sql must not be empty"));
         }
 
+        let permit = acquire_execution_permit(&context, &self.state)
+            .await
+            .inspect_err(|status| log_request_failed(&context, status))?;
         let state = Arc::clone(&self.state);
         let deadline_triggered = Arc::new(AtomicBool::new(false));
         let (interrupt_tx, interrupt_rx) = oneshot::channel();
@@ -135,6 +143,7 @@ impl DuckDbService for DuckDbGrpcService {
 
         let worker_context = context.clone();
         let response = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             let _completion = WorkerCompletionSignal::new(done_tx);
             run_execute_script(
                 worker_context,
@@ -173,6 +182,9 @@ impl DuckDbService for DuckDbGrpcService {
             return Err(Status::invalid_argument("sql must not be empty"));
         }
 
+        let permit = acquire_execution_permit(&context, &self.state)
+            .await
+            .inspect_err(|status| log_request_failed(&context, status))?;
         let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
         let worker_tx = tx.clone();
         let join_tx = tx.clone();
@@ -190,6 +202,7 @@ impl DuckDbService for DuckDbGrpcService {
 
         let worker_context = context.clone();
         let worker = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             let _completion = WorkerCompletionSignal::new(done_tx);
             run_query_streaming(
                 worker_context,
@@ -242,6 +255,9 @@ impl DuckDbService for DuckDbGrpcService {
             return Err(Status::invalid_argument("sql must not be empty"));
         }
 
+        let permit = acquire_execution_permit(&context, &self.state)
+            .await
+            .inspect_err(|status| log_request_failed(&context, status))?;
         let state = Arc::clone(&self.state);
         let deadline_triggered = Arc::new(AtomicBool::new(false));
         let (interrupt_tx, interrupt_rx) = oneshot::channel();
@@ -256,6 +272,7 @@ impl DuckDbService for DuckDbGrpcService {
 
         let worker_context = context.clone();
         let response = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             let _completion = WorkerCompletionSignal::new(done_tx);
             run_query_json(
                 worker_context,
@@ -282,14 +299,39 @@ pub fn apply_connection_pragmas(conn: &Connection, config: &Config) -> duckdb::R
     conn.execute_batch(&sql)
 }
 
-fn open_configured_connection(state: &Arc<AppState>) -> Result<Connection, Status> {
-    let conn = Connection::open(&state.config.db_path)
-        .map_err(|err| Status::internal(format!("duckdb connection open failed: {err}")))?;
+async fn acquire_execution_permit(
+    context: &RequestLogContext,
+    state: &Arc<AppState>,
+) -> Result<OwnedSemaphorePermit, Status> {
+    set_request_stage(context, "waiting_for_connection");
+    let acquire = Arc::clone(&state.execution_gate).acquire_owned();
 
-    apply_connection_pragmas(&conn, &state.config)
-        .map_err(|err| Status::internal(format!("duckdb pragma setup failed: {err}")))?;
+    if let Some(grpc_timeout) = context.grpc_timeout {
+        let deadline = tokio::time::Instant::from_std(context.started_at + grpc_timeout);
+        match tokio::time::timeout_at(deadline, acquire).await {
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(_)) => Err(Status::internal("duckdb execution gate is closed")),
+            Err(_) => {
+                log_request_timeout(context);
+                Err(Status::deadline_exceeded(
+                    "DuckDB request exceeded the gRPC deadline while waiting for the shared connection",
+                ))
+            }
+        }
+    } else {
+        acquire
+            .await
+            .map_err(|_| Status::internal("duckdb execution gate is closed"))
+    }
+}
 
-    Ok(conn)
+fn lock_shared_connection<'a>(
+    state: &'a Arc<AppState>,
+) -> Result<std::sync::MutexGuard<'a, Connection>, Status> {
+    state
+        .root_connection
+        .lock()
+        .map_err(|_| Status::internal("duckdb root connection mutex is poisoned"))
 }
 
 fn run_execute_script(
@@ -300,8 +342,8 @@ fn run_execute_script(
     interrupt_tx: Option<oneshot::Sender<Arc<InterruptHandle>>>,
 ) -> Result<ExecuteResponse, Status> {
     let result = (|| {
-        set_request_stage(&context, "opening_connection");
-        let conn = open_configured_connection(&state)?;
+        set_request_stage(&context, "acquiring_connection_lock");
+        let conn = lock_shared_connection(&state)?;
         if let Some(tx) = interrupt_tx {
             let _ = tx.send(conn.interrupt_handle());
         }
@@ -358,8 +400,8 @@ fn run_query_streaming(
     interrupt_tx: Option<oneshot::Sender<Arc<InterruptHandle>>>,
 ) -> Result<(), Status> {
     let result = (|| {
-        set_request_stage(&context, "opening_connection");
-        let conn = open_configured_connection(&state)?;
+        set_request_stage(&context, "acquiring_connection_lock");
+        let conn = lock_shared_connection(&state)?;
         if let Some(tx) = interrupt_tx {
             let _ = tx.send(conn.interrupt_handle());
         }
@@ -436,8 +478,8 @@ fn run_query_json(
     interrupt_tx: Option<oneshot::Sender<Arc<InterruptHandle>>>,
 ) -> Result<QueryJsonResponse, Status> {
     let result = (|| {
-        set_request_stage(&context, "opening_connection");
-        let conn = open_configured_connection(&state)?;
+        set_request_stage(&context, "acquiring_connection_lock");
+        let conn = lock_shared_connection(&state)?;
         if let Some(tx) = interrupt_tx {
             let _ = tx.send(conn.interrupt_handle());
         }

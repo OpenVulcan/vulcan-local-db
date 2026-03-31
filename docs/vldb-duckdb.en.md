@@ -252,9 +252,9 @@ The example client:
 - `params_json` currently supports scalar JSON values only: `null`, booleans, numbers, and strings
 - `QueryJson` is the lighter option for counters and other small result sets
 - `QueryStream` returns Arrow IPC bytes, not JSON
-- the service opens a fresh DuckDB connection per request against the configured database path
-- `memory_limit` and `threads` are applied on startup and on each request connection
-- timeout and slow-query logs now include the last execution stage, such as `opening_connection`, `preparing_statement`, `executing_query`, `fetching_rows`, or `serializing_json`
+- the service keeps one shared DuckDB connection open and serializes request execution through that single connection
+- `memory_limit` and `threads` are applied when the shared DuckDB connection starts
+- timeout and slow-query logs now include the last execution stage, such as `waiting_for_connection`, `acquiring_connection_lock`, `preparing_statement`, `executing_query`, `fetching_rows`, or `serializing_json`
 - request logging and slow-query logging are enabled by default
 - there is no built-in auth, ACL, or TLS layer
 - clients should consume the full stream to receive the complete result

@@ -251,9 +251,9 @@ go run . -addr 127.0.0.1:50052 -out ./query.arrow.stream
 - `params_json` 当前只支持标量 JSON 值：`null`、布尔、数字、字符串
 - `QueryJson` 适合轻量结果；大结果集仍建议使用 `QueryStream`
 - `QueryStream` 的结果是 Arrow IPC 字节流，不是 JSON
-- 服务内部会为每个请求按数据库路径重新打开独立 DuckDB 连接
-- `memory_limit` 和 `threads` 会在启动和每次请求连接上重复应用
-- 超时日志和慢 SQL 日志现在会带上最后执行阶段，例如 `opening_connection`、`preparing_statement`、`executing_query`、`fetching_rows`、`serializing_json`
+- 服务内部会保持单个共享 DuckDB 连接，并通过这个连接串行执行请求
+- `memory_limit` 和 `threads` 会在共享连接启动时应用
+- 超时日志和慢 SQL 日志现在会带上最后执行阶段，例如 `waiting_for_connection`、`acquiring_connection_lock`、`preparing_statement`、`executing_query`、`fetching_rows`、`serializing_json`
 - 默认启用请求日志和慢 SQL 日志
 - 当前服务没有内置认证、鉴权和 TLS
 - 如果客户端不消费完整流，查询结果可能只部分到达

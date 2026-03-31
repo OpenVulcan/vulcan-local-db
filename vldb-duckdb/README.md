@@ -81,12 +81,12 @@ The image uses `docker/vldb-duckdb.json`, whose Docker-specific `db_path` is `/a
 
 ## Notes
 
-- Each request opens its own DuckDB connection against the configured database path to reduce shared in-process lock contention.
+- The service keeps one shared DuckDB connection open for the configured database path and serializes request execution through that single connection.
 - All blocking DuckDB work runs inside `tokio::task::spawn_blocking`.
 - When `logging.log_dir` is empty, the server creates a sibling directory named after the DuckDB file stem, for example `./data/duckdb.db` -> `./data/duckdb/`.
 - If the client sends `grpc-timeout`, the server now logs that deadline and interrupts the running DuckDB query when the deadline expires.
-- Each request now logs request type, remote address, timeout, SQL preview, stage, elapsed time, and final status to help diagnose intermittent timeouts.
+- Each request now logs request type, remote address, timeout, SQL preview, stage, elapsed time, and final status to help diagnose intermittent timeouts and shared-connection queueing.
 - Slow SQL logging is enabled by default for requests that take 1000ms or longer.
 - Arrow IPC bytes are chunked in-process to avoid building the full stream in memory before sending.
 - Small result sets such as `count(*)` can use `QueryJson` instead of Arrow IPC.
-- `memory_limit` and `threads` are applied on startup and again on each per-request connection.
+- `memory_limit` and `threads` are applied when the shared DuckDB connection starts.

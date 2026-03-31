@@ -32,9 +32,8 @@ async fn main() -> Result<(), BoxError> {
 
     let logger = ServiceLogger::new("vldb-duckdb", &config.logging)?;
 
-    let startup_conn = Connection::open(&config.db_path)?;
-    apply_connection_pragmas(&startup_conn, &config)?;
-    drop(startup_conn);
+    let conn = Connection::open(&config.db_path)?;
+    apply_connection_pragmas(&conn, &config)?;
 
     let addr = format!("{}:{}", config.host, config.port).parse()?;
 
@@ -50,7 +49,7 @@ async fn main() -> Result<(), BoxError> {
     }
     println!("gRPC listening on {addr}");
 
-    let svc = DuckDbGrpcService::new(config.clone(), logger);
+    let svc = DuckDbGrpcService::new(conn, logger);
 
     Server::builder()
         .add_service(DuckDbServiceServer::new(svc))
