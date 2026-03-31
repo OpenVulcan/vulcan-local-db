@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.1.25"
+SCRIPT_VERSION="0.1.26"
 GLOBAL_HOME="${HOME}/.vulcan/vldb"
 GLOBAL_CONFIG="${GLOBAL_HOME}/config.json"
 RUNNER_DIR="${GLOBAL_HOME}/run"
@@ -856,6 +856,17 @@ release_has_asset() {
   grep -F "\"name\": \"${asset_name}\"" >/dev/null 2>&1 <<<"${LATEST_RELEASE_JSON}"
 }
 
+find_release_archive_name() {
+  local service="$1"
+  local target="$2"
+  local pattern="^${service}-.+-${target}\\.tar\\.gz$"
+
+  printf '%s\n' "${LATEST_RELEASE_JSON}" \
+    | sed -nE 's/.*"browser_download_url":[[:space:]]*"[^"]+\/([^"/]+)".*/\1/p' \
+    | grep -E "${pattern}" \
+    | head -n1
+}
+
 detect_target() {
   local os_name
   local arch_name
@@ -929,20 +940,30 @@ download_service_binary() {
   local temp_dir="$3"
   local resolved_tag
   local repo_url
-  resolved_tag="$(get_service_release_tag "${service}")"
-  repo_url="$(service_repo_url "${service}")" || return 1
-  local archive_name="${service}-${resolved_tag}-${target}.tar.gz"
-  local checksum_name="${archive_name}.sha256"
-  local archive_path="${temp_dir}/${archive_name}"
-  local checksum_path="${temp_dir}/${checksum_name}"
-  local base_url="${repo_url}/releases/download/${resolved_tag}"
-  local extract_dir="${temp_dir}/extract-${service}"
+  local archive_name
+  local checksum_name
+  local archive_path
+  local checksum_path
+  local base_url
+  local extract_dir
   local binary_path
   local example_path
+  resolved_tag="$(get_service_release_tag "${service}")"
+  repo_url="$(service_repo_url "${service}")" || return 1
+  archive_name="$(find_release_archive_name "${service}" "${target}" || true)"
+  checksum_name="${archive_name}.sha256"
+  archive_path="${temp_dir}/${archive_name}"
+  checksum_path="${temp_dir}/${checksum_name}"
+  base_url="${repo_url}/releases/download/${resolved_tag}"
+  extract_dir="${temp_dir}/extract-${service}"
 
   ensure_command tar tar || return 1
-  if ! release_has_asset "${archive_name}"; then
-    line "The current release does not provide ${archive_name}." "当前 release 不提供 ${archive_name}。"
+  if [[ -z "${archive_name}" ]]; then
+    line "The current release does not provide a ${target} archive for ${service}." "当前 release 不提供 ${service} 的 ${target} 平台压缩包。"
+    return 1
+  fi
+  if ! release_has_asset "${checksum_name}"; then
+    line "The current release does not provide ${checksum_name}." "当前 release 不提供 ${checksum_name}。"
     return 1
   fi
 

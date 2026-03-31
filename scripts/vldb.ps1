@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "0.1.25"
+$ScriptVersion = "0.1.26"
 $ManagerRepoSlug = "OpenVulcan/vulcan-local-db"
 $RawBaseUrl = "https://raw.githubusercontent.com/$ManagerRepoSlug/main/scripts"
 $LanceDbRepoSlug = "OpenVulcan/vldb-lancedb"
@@ -1019,14 +1019,20 @@ function Download-ServiceArchive {
 )
 
     $repoUrl = Get-ServiceRepoUrl -Service $Service
-    $archiveName = "$Service-$Tag-$Target.zip"
+    $archivePattern = '^{0}-.+-{1}\.zip$' -f [regex]::Escape($Service), [regex]::Escape($Target)
+    $archiveAsset = $Release.assets | Where-Object { $_.name -match $archivePattern } | Select-Object -First 1
+    if (-not $archiveAsset) {
+        throw "The current release does not provide a Windows archive for $Service on $Target."
+    }
+
+    $archiveName = [string]$archiveAsset.name
     $checksumName = "$archiveName.sha256"
     $archivePath = Join-Path $TempDir $archiveName
     $checksumPath = Join-Path $TempDir $checksumName
     $baseUrl = "$repoUrl/releases/download/$Tag"
 
-    if ($Release.assets.name -notcontains $archiveName) {
-        throw "The current release does not provide $archiveName."
+    if ($Release.assets.name -notcontains $checksumName) {
+        throw "The current release does not provide $checksumName."
     }
 
     Download-FileWithProgress -Url "$baseUrl/$archiveName" -OutFile $archivePath -Label $archiveName
