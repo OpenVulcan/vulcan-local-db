@@ -25,9 +25,6 @@
   - README：[`../vldb-lancedb/README.md`](../vldb-lancedb/README.md)
   - 中文：[`../vldb-lancedb/docs/README.zh-CN.md`](../vldb-lancedb/docs/README.zh-CN.md)
   - English: [`../vldb-lancedb/docs/README.en.md`](../vldb-lancedb/docs/README.en.md)
-- `vldb-duckdb`
-  - 中文：[`vldb-duckdb.zh-CN.md`](./vldb-duckdb.zh-CN.md)
-  - English: [`vldb-duckdb.en.md`](./vldb-duckdb.en.md)
 - `vldb-sqlite`
   - README：[`../vldb-sqlite/README.md`](../vldb-sqlite/README.md)
   - 中文：[`../vldb-sqlite/docs/README.zh-CN.md`](../vldb-sqlite/docs/README.zh-CN.md)

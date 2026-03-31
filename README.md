@@ -2,17 +2,15 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-VulcanLocalDB is a local-first data gateway workspace for applications and AI agents that need fast, structured access to private data without pushing everything into a remote service. It packages three Rust gRPC services and one Rust terminal manager:
+VulcanLocalDB is a local-first data gateway workspace for applications and AI agents that need fast, structured access to private data without pushing everything into a remote service. It packages two Rust gRPC services and one Rust terminal manager:
 
 - `vldb-lancedb`: a vector data gateway built on LanceDB
-- `vldb-duckdb`: a SQL and analytics gateway built on DuckDB
 - `vldb-sqlite`: a SQLite-native SQL gateway for embedded local databases
 - `vldb-manager`: a cross-platform `ratatui` control plane for building, starting, stopping, and monitoring the local gateways
 
 Together they give you a simple local deployment model:
 
 - store and search embeddings through LanceDB
-- run parameterized SQL safely through DuckDB
 - expose embedded SQLite databases through a gRPC boundary
 - use lightweight JSON for small results and Arrow IPC for large result sets
 - integrate from other languages through stable gRPC APIs
@@ -22,11 +20,10 @@ Together they give you a simple local deployment model:
 | Service | Purpose | Typical Use |
 | --- | --- | --- |
 | `vldb-lancedb` | Vector table management, vector upsert, nearest-neighbor search, conditional delete, and table drop | Agent memory, local RAG, semantic search, forgetting and cleanup |
-| `vldb-duckdb` | Parameterized SQL execution, lightweight JSON queries, and Arrow IPC streaming | Local analytics, counters, tabular query APIs, ETL helpers |
 | `vldb-sqlite` | SQLite-native parameterized SQL execution, JSON queries, and Arrow IPC streaming | Embedded app databases, local metadata stores, lightweight transactional SQL APIs |
 | `vldb-manager` | Cross-platform terminal UI for config generation, builds, process control, and output inspection | Replace scattered shell / PowerShell control scripts with a unified Rust interface |
 
-`vldb-lancedb` and `vldb-duckdb` include Go demo clients, and all three gateway services include local Docker packaging, while `vldb-manager` provides a local operator UI.
+`vldb-lancedb` and `vldb-sqlite` now keep their own service-specific docs and release automation, while `vldb-manager` remains the local operator UI for the workspace.
 
 ## Why This Project Exists
 
@@ -72,7 +69,7 @@ Pull and run the published images directly:
 
 ```bash
 docker pull openvulcan/vldb-lancedb:latest
-docker pull openvulcan/vldb-duckdb:latest
+docker pull openvulcan/vldb-sqlite:latest
 ```
 
 ```bash
@@ -84,17 +81,17 @@ docker run -d \
   openvulcan/vldb-lancedb:latest
 
 docker run -d \
-  --name vldb-duckdb \
+  --name vldb-sqlite \
   --restart unless-stopped \
-  -p 19401:19401 \
-  -v vldb-duckdb-data:/app/data \
-  openvulcan/vldb-duckdb:latest
+  -p 19501:19501 \
+  -v vldb-sqlite-data:/app/data \
+  openvulcan/vldb-sqlite:latest
 ```
 
 Default endpoints:
 
 - `vldb-lancedb`: `127.0.0.1:19301`
-- `vldb-duckdb`: `127.0.0.1:19401`
+- `vldb-sqlite`: `127.0.0.1:19501`
 
 Detailed Docker install guides:
 
@@ -109,7 +106,7 @@ Typical startup commands:
 
 ```bash
 ./vldb-lancedb --config ./vldb-lancedb.json
-./vldb-duckdb --config ./vldb-duckdb.json
+./vldb-sqlite --config ./vldb-sqlite.json
 ```
 
 Detailed binary install guides:
@@ -123,9 +120,6 @@ Detailed binary install guides:
 
 ```bash
 cd ./vldb-lancedb
-cargo build
-
-cd ../vldb-duckdb
 cargo build
 
 cd ../vldb-sqlite
@@ -147,7 +141,6 @@ For local image builds, Dockerfiles, compose-based development, and custom Docke
 ```text
 .
 |-- vldb-lancedb/
-|-- vldb-duckdb/
 |-- vldb-sqlite/
 |-- vldb-manager/
 |-- docs/
@@ -179,9 +172,6 @@ For local image builds, Dockerfiles, compose-based development, and custom Docke
     - README: [vldb-lancedb/README.md](./vldb-lancedb/README.md)
     - English: [vldb-lancedb/docs/README.en.md](./vldb-lancedb/docs/README.en.md)
     - Chinese: [vldb-lancedb/docs/README.zh-CN.md](./vldb-lancedb/docs/README.zh-CN.md)
-  - `vldb-duckdb`
-    - English: [docs/vldb-duckdb.en.md](./docs/vldb-duckdb.en.md)
-    - Chinese: [docs/vldb-duckdb.zh-CN.md](./docs/vldb-duckdb.zh-CN.md)
   - `vldb-sqlite`
     - README: [vldb-sqlite/README.md](./vldb-sqlite/README.md)
     - English: [vldb-sqlite/docs/README.en.md](./vldb-sqlite/docs/README.en.md)
@@ -192,18 +182,17 @@ For local image builds, Dockerfiles, compose-based development, and custom Docke
 
 ## Current Status
 
-- `vldb-lancedb`, `vldb-duckdb`, and `vldb-sqlite` all build in `debug` and `release`
+- `vldb-lancedb` and `vldb-sqlite` both build in `debug` and `release`
 - `vldb-manager` builds as a Rust 2024 terminal UI with `ratatui`
-- both Go demo clients build and run
-- both services have been smoke-tested end-to-end through local gRPC clients
-- Docker packaging is available for both services
+- both gateway services have local Docker packaging
+- service release pipelines now live in the child projects
 
 ## Notes
 
 - this repository exposes gRPC services, not REST APIs
 - `vldb-lancedb` requires `protoc` during Rust builds
-- `vldb-duckdb` supports both `QueryJson` and `QueryStream`
-- `vldb-sqlite` follows a DuckDB-like RPC shape, but its config and runtime behavior are tuned around SQLite PRAGMAs and dynamic typing
+- `vldb-sqlite` supports both `QueryJson` and `QueryStream`
+- `vldb-sqlite` is tuned around SQLite PRAGMAs, WAL mode, locking, and dynamic typing
 - on Docker Desktop for Windows, `vldb-lancedb` is best persisted with Docker named volumes
 
 ## License

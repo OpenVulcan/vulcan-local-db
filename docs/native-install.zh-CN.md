@@ -2,14 +2,10 @@
 
 ## 说明
 
-如果你不想使用 Docker，可以直接使用 GitHub Releases 中发布好的平台二进制压缩包：
-
-- [OpenVulcan/vulcan-local-db Releases](https://github.com/OpenVulcan/vulcan-local-db/releases)
-
-每个版本都会分别提供：
+服务二进制发布已经下沉到各自子项目维护。你可以直接去对应服务仓库下载平台压缩包：
 
 - `vldb-lancedb`
-- `vldb-duckdb`
+- `vldb-sqlite`
 
 常见压缩格式：
 
@@ -24,14 +20,13 @@
 
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
-- `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
 - `x86_64-pc-windows-msvc`
 
 例如：
 
 - `vldb-lancedb-v0.1.1-x86_64-unknown-linux-gnu.tar.gz`
-- `vldb-duckdb-v0.1.1-x86_64-pc-windows-msvc.zip`
+- `vldb-sqlite-v0.1.0-x86_64-pc-windows-msvc.zip`
 
 ## 压缩包内容
 
@@ -50,14 +45,14 @@ Linux 或 macOS：
 
 ```bash
 tar -xzf vldb-lancedb-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
-tar -xzf vldb-duckdb-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf vldb-sqlite-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
 ```
 
 Windows PowerShell：
 
 ```powershell
 Expand-Archive .\vldb-lancedb-v0.1.1-x86_64-pc-windows-msvc.zip -DestinationPath .\vldb-lancedb
-Expand-Archive .\vldb-duckdb-v0.1.1-x86_64-pc-windows-msvc.zip -DestinationPath .\vldb-duckdb
+Expand-Archive .\vldb-sqlite-v0.1.0-x86_64-pc-windows-msvc.zip -DestinationPath .\vldb-sqlite
 ```
 
 ### 2. 准备配置文件
@@ -71,8 +66,9 @@ Expand-Archive .\vldb-duckdb-v0.1.1-x86_64-pc-windows-msvc.zip -DestinationPath 
 ```json
 {
   "host": "127.0.0.1",
-  "port": 50051,
+  "port": 19301,
   "db_path": "./data",
+  "read_consistency_interval_ms": 0,
   "logging": {
     "enabled": true,
     "file_enabled": true,
@@ -88,15 +84,27 @@ Expand-Archive .\vldb-duckdb-v0.1.1-x86_64-pc-windows-msvc.zip -DestinationPath 
 }
 ```
 
-`vldb-duckdb`
+`vldb-sqlite`
 
 ```json
 {
   "host": "0.0.0.0",
-  "port": 50052,
-  "db_path": "./data/duckdb.db",
-  "memory_limit": "2GB",
-  "threads": 4,
+  "port": 19501,
+  "db_path": "./data/sqlite.db",
+  "connection_pool_size": 8,
+  "busy_timeout_ms": 5000,
+  "pragmas": {
+    "journal_mode": "WAL",
+    "synchronous": "NORMAL",
+    "foreign_keys": true
+  },
+  "hardening": {
+    "enforce_db_file_lock": true,
+    "read_only": false,
+    "allow_uri_filenames": false,
+    "trusted_schema": false,
+    "defensive": true
+  },
   "logging": {
     "enabled": true,
     "file_enabled": true,
@@ -107,7 +115,7 @@ Expand-Archive .\vldb-duckdb-v0.1.1-x86_64-pc-windows-msvc.zip -DestinationPath 
     "slow_query_full_sql_enabled": true,
     "sql_preview_chars": 160,
     "log_dir": "",
-    "log_file_name": "vldb-duckdb.log"
+    "log_file_name": "vldb-sqlite.log"
   }
 }
 ```
@@ -120,38 +128,34 @@ Linux 或 macOS：
 
 ```bash
 ./vldb-lancedb --config ./vldb-lancedb.json
-./vldb-duckdb --config ./vldb-duckdb.json
+./vldb-sqlite --config ./vldb-sqlite.json
 ```
 
 Windows PowerShell：
 
 ```powershell
 .\vldb-lancedb.exe --config .\vldb-lancedb.json
-.\vldb-duckdb.exe --config .\vldb-duckdb.json
+.\vldb-sqlite.exe --config .\vldb-sqlite.json
 ```
 
 默认访问地址：
 
-- `vldb-lancedb`：`127.0.0.1:50051`
-- `vldb-duckdb`：`127.0.0.1:50052`
+- `vldb-lancedb`：`127.0.0.1:19301`
+- `vldb-sqlite`：`127.0.0.1:19501`
 
 ## 验证服务
 
 确认进程已经监听对应端口后，再用你的 gRPC 客户端连接。
 
-仓库里已经自带 Go 示例客户端：
-
-- `vldb-lancedb/examples/go-client/`
-- `vldb-duckdb/demo/go-client/`
-
 详细接口与调用方式可继续参考：
 
-- [vldb-lancedb.zh-CN.md](./vldb-lancedb.zh-CN.md)
-- [vldb-duckdb.zh-CN.md](./vldb-duckdb.zh-CN.md)
+- [../vldb-lancedb/docs/README.zh-CN.md](../vldb-lancedb/docs/README.zh-CN.md)
+- [../vldb-sqlite/docs/README.zh-CN.md](../vldb-sqlite/docs/README.zh-CN.md)
 
 ## 注意事项
 
 - `vldb-lancedb` 在源码编译时可能需要 `protoc`，但直接使用发布包时不需要。
-- `vldb-duckdb` 同时提供 `QueryJson` 和 `QueryStream`。
+- `vldb-sqlite` 同时提供 `QueryJson` 和 `QueryStream`。
+- SQLite 默认配置启用了 WAL。
 - 生产环境建议把 `db_path` 配成稳定的绝对路径。
 - 如果你更希望用容器方式部署，请查看 [docker-install.zh-CN.md](./docker-install.zh-CN.md)。

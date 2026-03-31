@@ -1,9 +1,0 @@
-.git
-target
-data
-_tmp_data
-demo
-*.log
-*.arrow.stream
-Dockerfile*
-**/.DS_Store

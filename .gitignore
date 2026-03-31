@@ -8,3 +8,4 @@
 /docker-data/
 /vldb-sqlite/
 /vldb-lancedb/
+/vldb-duckdb/

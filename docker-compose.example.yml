@@ -14,19 +14,6 @@ services:
       - ./vldb-lancedb/docker/vldb-lancedb.json:/app/config/vldb-lancedb.json:ro
     restart: unless-stopped
 
-  vldb-duckdb:
-    build:
-      context: ./vldb-duckdb
-      dockerfile: Dockerfile
-    image: vulcan/vldb-duckdb:local
-    container_name: vldb-duckdb
-    ports:
-      - "19401:19401"
-    volumes:
-      - vldb-duckdb-data:/app/data
-      - ./vldb-duckdb/docker/vldb-duckdb.json:/app/config/vldb-duckdb.json:ro
-    restart: unless-stopped
-
   vldb-sqlite:
     build:
       context: ./vldb-sqlite
@@ -42,5 +29,4 @@ services:
 
 volumes:
   vldb-lancedb-data:
-  vldb-duckdb-data:
   vldb-sqlite-data:

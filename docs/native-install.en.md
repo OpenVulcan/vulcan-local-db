@@ -2,14 +2,10 @@
 
 ## Overview
 
-If you prefer to run VulcanLocalDB without Docker, use the prebuilt release archives published on GitHub Releases:
-
-- [OpenVulcan/vulcan-local-db Releases](https://github.com/OpenVulcan/vulcan-local-db/releases)
-
-Each release provides platform-specific archives for:
+The service release archives now live with each child project. Download the matching archive from the service repository you want to run:
 
 - `vldb-lancedb`
-- `vldb-duckdb`
+- `vldb-sqlite`
 
 Typical archive formats:
 
@@ -24,14 +20,13 @@ Common targets:
 
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
-- `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
 - `x86_64-pc-windows-msvc`
 
 Examples:
 
 - `vldb-lancedb-v0.1.1-x86_64-unknown-linux-gnu.tar.gz`
-- `vldb-duckdb-v0.1.1-x86_64-pc-windows-msvc.zip`
+- `vldb-sqlite-v0.1.0-x86_64-pc-windows-msvc.zip`
 
 ## Package Contents
 
@@ -50,14 +45,14 @@ Linux or macOS:
 
 ```bash
 tar -xzf vldb-lancedb-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
-tar -xzf vldb-duckdb-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf vldb-sqlite-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
 ```
 
 Windows PowerShell:
 
 ```powershell
 Expand-Archive .\vldb-lancedb-v0.1.1-x86_64-pc-windows-msvc.zip -DestinationPath .\vldb-lancedb
-Expand-Archive .\vldb-duckdb-v0.1.1-x86_64-pc-windows-msvc.zip -DestinationPath .\vldb-duckdb
+Expand-Archive .\vldb-sqlite-v0.1.0-x86_64-pc-windows-msvc.zip -DestinationPath .\vldb-sqlite
 ```
 
 ### 2. Prepare Config Files
@@ -71,8 +66,9 @@ Typical defaults:
 ```json
 {
   "host": "127.0.0.1",
-  "port": 50051,
+  "port": 19301,
   "db_path": "./data",
+  "read_consistency_interval_ms": 0,
   "logging": {
     "enabled": true,
     "file_enabled": true,
@@ -88,15 +84,27 @@ Typical defaults:
 }
 ```
 
-`vldb-duckdb`
+`vldb-sqlite`
 
 ```json
 {
   "host": "0.0.0.0",
-  "port": 50052,
-  "db_path": "./data/duckdb.db",
-  "memory_limit": "2GB",
-  "threads": 4,
+  "port": 19501,
+  "db_path": "./data/sqlite.db",
+  "connection_pool_size": 8,
+  "busy_timeout_ms": 5000,
+  "pragmas": {
+    "journal_mode": "WAL",
+    "synchronous": "NORMAL",
+    "foreign_keys": true
+  },
+  "hardening": {
+    "enforce_db_file_lock": true,
+    "read_only": false,
+    "allow_uri_filenames": false,
+    "trusted_schema": false,
+    "defensive": true
+  },
   "logging": {
     "enabled": true,
     "file_enabled": true,
@@ -107,7 +115,7 @@ Typical defaults:
     "slow_query_full_sql_enabled": true,
     "sql_preview_chars": 160,
     "log_dir": "",
-    "log_file_name": "vldb-duckdb.log"
+    "log_file_name": "vldb-sqlite.log"
   }
 }
 ```
@@ -120,38 +128,34 @@ Linux or macOS:
 
 ```bash
 ./vldb-lancedb --config ./vldb-lancedb.json
-./vldb-duckdb --config ./vldb-duckdb.json
+./vldb-sqlite --config ./vldb-sqlite.json
 ```
 
 Windows PowerShell:
 
 ```powershell
 .\vldb-lancedb.exe --config .\vldb-lancedb.json
-.\vldb-duckdb.exe --config .\vldb-duckdb.json
+.\vldb-sqlite.exe --config .\vldb-sqlite.json
 ```
 
 Default endpoints:
 
-- `vldb-lancedb`: `127.0.0.1:50051`
-- `vldb-duckdb`: `127.0.0.1:50052`
+- `vldb-lancedb`: `127.0.0.1:19301`
+- `vldb-sqlite`: `127.0.0.1:19501`
 
 ## Verify The Services
 
 Check that the process is listening on the expected port, then connect with your gRPC client.
 
-The repository already includes Go demo clients:
-
-- `vldb-lancedb/examples/go-client/`
-- `vldb-duckdb/demo/go-client/`
-
 Detailed service usage:
 
-- [vldb-lancedb.en.md](./vldb-lancedb.en.md)
-- [vldb-duckdb.en.md](./vldb-duckdb.en.md)
+- [../vldb-lancedb/docs/README.en.md](../vldb-lancedb/docs/README.en.md)
+- [../vldb-sqlite/docs/README.en.md](../vldb-sqlite/docs/README.en.md)
 
 ## Notes
 
 - `vldb-lancedb` may require `protoc` when you build from source, but prebuilt release archives do not.
-- `vldb-duckdb` exposes both `QueryJson` and `QueryStream`.
+- `vldb-sqlite` exposes both `QueryJson` and `QueryStream`.
+- SQLite release configs default to WAL mode.
 - For production deployments, prefer a stable absolute path for `db_path`.
 - If you want containerized deployment instead, use [docker-install.en.md](./docker-install.en.md).

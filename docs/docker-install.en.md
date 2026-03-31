@@ -5,7 +5,7 @@
 If you only want to install and run the published images, use the Docker Hub images below:
 
 - `openvulcan/vldb-lancedb:latest`
-- `openvulcan/vldb-duckdb:latest`
+- `openvulcan/vldb-sqlite:latest`
 
 This guide uses direct `docker pull` and `docker run` commands instead of building from source.
 
@@ -18,7 +18,7 @@ This guide uses direct `docker pull` and `docker run` commands instead of buildi
 
 ```bash
 docker pull openvulcan/vldb-lancedb:latest
-docker pull openvulcan/vldb-duckdb:latest
+docker pull openvulcan/vldb-sqlite:latest
 ```
 
 ## 2. Run Each Service
@@ -29,33 +29,33 @@ docker pull openvulcan/vldb-duckdb:latest
 docker run -d \
   --name vldb-lancedb \
   --restart unless-stopped \
-  -p 50051:50051 \
+  -p 19301:19301 \
   -v vldb-lancedb-data:/app/data \
   openvulcan/vldb-lancedb:latest
 ```
 
-### Start `vldb-duckdb`
+### Start `vldb-sqlite`
 
 ```bash
 docker run -d \
-  --name vldb-duckdb \
+  --name vldb-sqlite \
   --restart unless-stopped \
-  -p 50052:50052 \
-  -v vldb-duckdb-data:/app/data \
-  openvulcan/vldb-duckdb:latest
+  -p 19501:19501 \
+  -v vldb-sqlite-data:/app/data \
+  openvulcan/vldb-sqlite:latest
 ```
 
 Default endpoints:
 
-- `vldb-lancedb`: `127.0.0.1:50051`
-- `vldb-duckdb`: `127.0.0.1:50052`
+- `vldb-lancedb`: `127.0.0.1:19301`
+- `vldb-sqlite`: `127.0.0.1:19501`
 
 ## 3. Check The Running Containers
 
 ```bash
 docker ps
 docker logs -f vldb-lancedb
-docker logs -f vldb-duckdb
+docker logs -f vldb-sqlite
 ```
 
 ## 4. Stop Or Remove The Services
@@ -63,19 +63,19 @@ docker logs -f vldb-duckdb
 Stop:
 
 ```bash
-docker stop vldb-lancedb vldb-duckdb
+docker stop vldb-lancedb vldb-sqlite
 ```
 
 Remove:
 
 ```bash
-docker rm vldb-lancedb vldb-duckdb
+docker rm vldb-lancedb vldb-sqlite
 ```
 
 Remove volumes too, if you want to delete persisted data:
 
 ```bash
-docker volume rm vldb-lancedb-data vldb-duckdb-data
+docker volume rm vldb-lancedb-data vldb-sqlite-data
 ```
 
 ## 5. Use A Custom Config File
@@ -88,22 +88,22 @@ If you want to override the default config, mount your own JSON file into the co
 docker run -d \
   --name vldb-lancedb \
   --restart unless-stopped \
-  -p 50051:50051 \
+  -p 19301:19301 \
   -v vldb-lancedb-data:/app/data \
   -v /your/path/vldb-lancedb.json:/app/config/vldb-lancedb.json:ro \
   openvulcan/vldb-lancedb:latest
 ```
 
-### Custom config for `vldb-duckdb`
+### Custom config for `vldb-sqlite`
 
 ```bash
 docker run -d \
-  --name vldb-duckdb \
+  --name vldb-sqlite \
   --restart unless-stopped \
-  -p 50052:50052 \
-  -v vldb-duckdb-data:/app/data \
-  -v /your/path/vldb-duckdb.json:/app/config/vldb-duckdb.json:ro \
-  openvulcan/vldb-duckdb:latest
+  -p 19501:19501 \
+  -v vldb-sqlite-data:/app/data \
+  -v /your/path/vldb-sqlite.json:/app/config/vldb-sqlite.json:ro \
+  openvulcan/vldb-sqlite:latest
 ```
 
 ## 6. Change Ports
@@ -114,14 +114,14 @@ Example:
 
 ```bash
 docker run -d \
-  --name vldb-duckdb \
+  --name vldb-sqlite \
   --restart unless-stopped \
-  -p 60052:50052 \
-  -v vldb-duckdb-data:/app/data \
-  openvulcan/vldb-duckdb:latest
+  -p 19601:19501 \
+  -v vldb-sqlite-data:/app/data \
+  openvulcan/vldb-sqlite:latest
 ```
 
-That exposes the service at `127.0.0.1:60052` while the container still listens on `50052`.
+That exposes the service at `127.0.0.1:19601` while the container still listens on `19501`.
 
 If you want to change the in-container listening port too, mount a custom config file and update both:
 
@@ -139,22 +139,22 @@ services:
     container_name: vldb-lancedb
     restart: unless-stopped
     ports:
-      - "50051:50051"
+      - "19301:19301"
     volumes:
       - vldb-lancedb-data:/app/data
 
-  vldb-duckdb:
-    image: openvulcan/vldb-duckdb:latest
-    container_name: vldb-duckdb
+  vldb-sqlite:
+    image: openvulcan/vldb-sqlite:latest
+    container_name: vldb-sqlite
     restart: unless-stopped
     ports:
-      - "50052:50052"
+      - "19501:19501"
     volumes:
-      - vldb-duckdb-data:/app/data
+      - vldb-sqlite-data:/app/data
 
 volumes:
   vldb-lancedb-data:
-  vldb-duckdb-data:
+  vldb-sqlite-data:
 ```
 
 Start it with:
@@ -167,5 +167,6 @@ docker compose up -d
 
 - These images expose gRPC services, not REST services.
 - `vldb-lancedb` stores data directly under `/app/data`.
-- `vldb-duckdb` stores data under `/app/data/duckdb.db`.
+- `vldb-sqlite` stores data under `/app/data/sqlite.db`.
+- SQLite runs with WAL enabled by default in the published Docker config.
 - Named volumes are the safest default for persistence.

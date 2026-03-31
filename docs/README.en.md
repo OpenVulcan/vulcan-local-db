@@ -25,9 +25,6 @@ This folder contains the detailed usage guides for VulcanLocalDB.
   - README: [../vldb-lancedb/README.md](../vldb-lancedb/README.md)
   - English: [../vldb-lancedb/docs/README.en.md](../vldb-lancedb/docs/README.en.md)
   - Chinese: [../vldb-lancedb/docs/README.zh-CN.md](../vldb-lancedb/docs/README.zh-CN.md)
-- `vldb-duckdb`
-  - English: [vldb-duckdb.en.md](./vldb-duckdb.en.md)
-  - Chinese: [vldb-duckdb.zh-CN.md](./vldb-duckdb.zh-CN.md)
 - `vldb-sqlite`
   - README: [../vldb-sqlite/README.md](../vldb-sqlite/README.md)
   - English: [../vldb-sqlite/docs/README.en.md](../vldb-sqlite/docs/README.en.md)
