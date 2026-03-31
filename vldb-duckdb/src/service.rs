@@ -25,7 +25,7 @@ static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
 struct AppState {
-    root_connection: Arc<Mutex<Connection>>,
+    root_connection: Arc<Mutex<Option<Connection>>>,
     execution_gate: Arc<Semaphore>,
     logger: Arc<ServiceLogger>,
     connection_config: Config,
@@ -97,7 +97,7 @@ impl DuckDbGrpcService {
     pub fn new(root_connection: Connection, logger: Arc<ServiceLogger>, config: Config) -> Self {
         Self {
             state: Arc::new(AppState {
-                root_connection: Arc::new(Mutex::new(root_connection)),
+                root_connection: Arc::new(Mutex::new(Some(root_connection))),
                 execution_gate: Arc::new(Semaphore::new(1)),
                 logger,
                 connection_config: config,
@@ -397,11 +397,55 @@ async fn acquire_execution_permit(
 
 fn lock_shared_connection<'a>(
     state: &'a Arc<AppState>,
-) -> Result<std::sync::MutexGuard<'a, Connection>, Status> {
+) -> Result<std::sync::MutexGuard<'a, Option<Connection>>, Status> {
     state
         .root_connection
         .lock()
         .map_err(|_| Status::internal("duckdb root connection mutex is poisoned"))
+}
+
+fn shared_connection_unavailable_status() -> Status {
+    Status::unavailable(
+        "shared DuckDB connection is unavailable; retry the request or restart vldb-duckdb",
+    )
+}
+
+fn ensure_shared_connection<'a>(
+    context: &RequestLogContext,
+    state: &Arc<AppState>,
+    conn_slot: &'a mut Option<Connection>,
+) -> Result<&'a mut Connection, RequestFailure> {
+    if conn_slot.is_none() {
+        reopen_shared_connection(conn_slot, &state.connection_config).map_err(|err| {
+            context.logger.log(
+                "recover_error",
+                format!(
+                    "request_id={} op={} stage={} detail=failed to lazily reopen unavailable shared DuckDB connection reset_error=\"{}\"",
+                    context.request_id,
+                    context.operation,
+                    context.progress.snapshot(),
+                    err,
+                ),
+            );
+            RequestFailure::Status(Status::unavailable(format!(
+                "shared DuckDB connection is unavailable and could not be reopened: {err}"
+            )))
+        })?;
+
+        context.logger.log(
+            "recover",
+            format!(
+                "request_id={} op={} stage={} detail=lazily reopened unavailable shared DuckDB connection before request execution",
+                context.request_id,
+                context.operation,
+                context.progress.snapshot(),
+            ),
+        );
+    }
+
+    conn_slot
+        .as_mut()
+        .ok_or_else(|| RequestFailure::Status(shared_connection_unavailable_status()))
 }
 
 fn run_execute_script(
@@ -411,15 +455,27 @@ fn run_execute_script(
     params_json: String,
     interrupt_tx: Option<oneshot::Sender<Arc<InterruptHandle>>>,
 ) -> Result<ExecuteResponse, Status> {
-    let mut conn = lock_shared_connection(&state)?;
+    let mut conn_slot = lock_shared_connection(&state)?;
     if let Some(tx) = interrupt_tx {
-        let _ = tx.send(conn.interrupt_handle());
+        let interrupt_handle = match ensure_shared_connection(&context, &state, &mut conn_slot) {
+            Ok(conn) => conn.interrupt_handle(),
+            Err(failure) => {
+                return Err(finalize_request_failure(
+                    &context,
+                    &state,
+                    &mut conn_slot,
+                    failure,
+                ));
+            }
+        };
+        let _ = tx.send(interrupt_handle);
     }
 
     let result = (|| -> Result<ExecuteResponse, RequestFailure> {
         set_request_stage(&context, "acquiring_connection_lock");
         set_request_stage(&context, "parsing_params");
         let bound_values = parse_bound_params(&params_json).map_err(RequestFailure::Status)?;
+        let conn = ensure_shared_connection(&context, &state, &mut conn_slot)?;
 
         if bound_values.is_empty() {
             set_request_stage(&context, "executing_batch");
@@ -453,8 +509,8 @@ fn run_execute_script(
             message: format!("statement executed successfully (rows_changed={rows_changed})"),
         })
     })();
-    let result =
-        result.map_err(|failure| finalize_request_failure(&context, &state, &mut conn, failure));
+    let result = result
+        .map_err(|failure| finalize_request_failure(&context, &state, &mut conn_slot, failure));
 
     match &result {
         Ok(response) => log_request_succeeded(&context, response.message.as_str()),
@@ -472,15 +528,27 @@ fn run_query_streaming(
     tx: mpsc::Sender<Result<QueryResponse, Status>>,
     interrupt_tx: Option<oneshot::Sender<Arc<InterruptHandle>>>,
 ) -> Result<(), Status> {
-    let mut conn = lock_shared_connection(&state)?;
+    let mut conn_slot = lock_shared_connection(&state)?;
     if let Some(tx) = interrupt_tx {
-        let _ = tx.send(conn.interrupt_handle());
+        let interrupt_handle = match ensure_shared_connection(&context, &state, &mut conn_slot) {
+            Ok(conn) => conn.interrupt_handle(),
+            Err(failure) => {
+                return Err(finalize_request_failure(
+                    &context,
+                    &state,
+                    &mut conn_slot,
+                    failure,
+                ));
+            }
+        };
+        let _ = tx.send(interrupt_handle);
     }
 
     let result = (|| -> Result<(), RequestFailure> {
         set_request_stage(&context, "acquiring_connection_lock");
         set_request_stage(&context, "parsing_params");
         let bound_values = parse_bound_params(&params_json).map_err(RequestFailure::Status)?;
+        let conn = ensure_shared_connection(&context, &state, &mut conn_slot)?;
         set_request_stage(&context, "preparing_statement");
         let mut stmt = conn
             .prepare(&sql)
@@ -537,8 +605,8 @@ fn run_query_streaming(
 
         Ok(())
     })();
-    let result =
-        result.map_err(|failure| finalize_request_failure(&context, &state, &mut conn, failure));
+    let result = result
+        .map_err(|failure| finalize_request_failure(&context, &state, &mut conn_slot, failure));
 
     if let Err(status) = &result {
         log_request_failed(&context, status);
@@ -554,15 +622,27 @@ fn run_query_json(
     params_json: String,
     interrupt_tx: Option<oneshot::Sender<Arc<InterruptHandle>>>,
 ) -> Result<QueryJsonResponse, Status> {
-    let mut conn = lock_shared_connection(&state)?;
+    let mut conn_slot = lock_shared_connection(&state)?;
     if let Some(tx) = interrupt_tx {
-        let _ = tx.send(conn.interrupt_handle());
+        let interrupt_handle = match ensure_shared_connection(&context, &state, &mut conn_slot) {
+            Ok(conn) => conn.interrupt_handle(),
+            Err(failure) => {
+                return Err(finalize_request_failure(
+                    &context,
+                    &state,
+                    &mut conn_slot,
+                    failure,
+                ));
+            }
+        };
+        let _ = tx.send(interrupt_handle);
     }
 
     let result = (|| -> Result<QueryJsonResponse, RequestFailure> {
         set_request_stage(&context, "acquiring_connection_lock");
         set_request_stage(&context, "parsing_params");
         let bound_values = parse_bound_params(&params_json).map_err(RequestFailure::Status)?;
+        let conn = ensure_shared_connection(&context, &state, &mut conn_slot)?;
         set_request_stage(&context, "preparing_statement");
         let mut stmt = conn
             .prepare(&sql)
@@ -602,8 +682,8 @@ fn run_query_json(
 
         Ok(QueryJsonResponse { json_data })
     })();
-    let result =
-        result.map_err(|failure| finalize_request_failure(&context, &state, &mut conn, failure));
+    let result = result
+        .map_err(|failure| finalize_request_failure(&context, &state, &mut conn_slot, failure));
 
     match &result {
         Ok(response) => log_request_succeeded(
@@ -802,7 +882,7 @@ fn status_internal<E: std::fmt::Display>(prefix: &str, error: E) -> Status {
 fn finalize_request_failure(
     context: &RequestLogContext,
     state: &Arc<AppState>,
-    conn: &mut Connection,
+    conn_slot: &mut Option<Connection>,
     failure: RequestFailure,
 ) -> Status {
     match failure {
@@ -816,7 +896,7 @@ fn finalize_request_failure(
                 return status_internal(prefix, error_message);
             }
 
-            match reopen_shared_connection(conn, &state.connection_config) {
+            match reopen_shared_connection(conn_slot, &state.connection_config) {
                 Ok(()) => {
                     log_connection_recovery(
                         context,
@@ -862,12 +942,18 @@ fn should_reset_shared_connection(error_message: &str) -> bool {
         .contains("resource deadlock would occur")
 }
 
-fn reopen_shared_connection(conn: &mut Connection, config: &Config) -> Result<(), String> {
+fn reopen_shared_connection(
+    conn_slot: &mut Option<Connection>,
+    config: &Config,
+) -> Result<(), String> {
+    let previous_connection = conn_slot.take();
+    drop(previous_connection);
+
     let new_conn = Connection::open(&config.db_path)
         .map_err(|err| format!("reopen connection failed: {err}"))?;
     apply_connection_pragmas(&new_conn, config)
         .map_err(|err| format!("reapply pragmas failed: {err}"))?;
-    *conn = new_conn;
+    *conn_slot = Some(new_conn);
     Ok(())
 }
 
@@ -1232,12 +1318,15 @@ impl Write for GrpcChunkWriter {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_connection_pragmas, parse_grpc_timeout_header, preview_sql,
+        apply_connection_pragmas, parse_grpc_timeout_header, preview_sql, reopen_shared_connection,
         should_reset_shared_connection, sql_string_list,
     };
     use crate::config::Config;
     use duckdb::Connection;
+    use std::fs;
+    use std::path::PathBuf;
     use std::time::Duration;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parse_grpc_timeout_supports_all_units() {
@@ -1337,5 +1426,38 @@ mod tests {
 
         assert!(!external_access);
         assert!(lock_configuration);
+    }
+
+    #[test]
+    fn reopen_shared_connection_drops_old_file_handle_before_reopen() {
+        let mut config = Config::default();
+        config.db_path = unique_test_db_path("reopen_shared_connection");
+
+        let conn = Connection::open(&config.db_path).expect("open test database");
+        apply_connection_pragmas(&conn, &config).expect("apply pragmas to test database");
+
+        let mut conn_slot = Some(conn);
+        reopen_shared_connection(&mut conn_slot, &config).expect("reopen shared connection");
+
+        assert!(conn_slot.is_some());
+
+        drop(conn_slot.take());
+        cleanup_test_db_path(&config.db_path);
+    }
+
+    fn unique_test_db_path(prefix: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("vldb-duckdb-{prefix}-{unique}.db"))
+    }
+
+    fn cleanup_test_db_path(db_path: &PathBuf) {
+        let wal_path = PathBuf::from(format!("{}.wal", db_path.display()));
+        let shm_path = PathBuf::from(format!("{}.shm", db_path.display()));
+        let _ = fs::remove_file(db_path);
+        let _ = fs::remove_file(wal_path);
+        let _ = fs::remove_file(shm_path);
     }
 }
