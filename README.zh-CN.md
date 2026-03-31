@@ -2,10 +2,11 @@
 
 [English](./README.md) | 简体中文
 
-`VulcanLocalDB` 是一个面向本地部署场景的数据网关工作区，适合应用程序和 AI Agent 在不依赖远程中心化服务的情况下，统一访问本地向量数据与本地 SQL 数据。仓库当前包含两个 Rust gRPC 服务：
+`VulcanLocalDB` 是一个面向本地部署场景的数据网关工作区，适合应用程序和 AI Agent 在不依赖远程中心化服务的情况下，统一访问本地向量数据与本地 SQL 数据。仓库当前包含两个 Rust gRPC 服务和一个 Rust 终端管理器：
 
 - `vldb-lancedb`：基于 LanceDB 的向量数据网关
 - `vldb-duckdb`：基于 DuckDB 的 SQL 与分析数据网关
+- `vldb-manager`：基于 `ratatui` 的跨平台控制台，用来统一构建、启动、停止和观测本地网关
 
 这两个服务组合起来，可以提供一套清晰的本地数据访问方式：
 
@@ -20,8 +21,9 @@
 | --- | --- | --- |
 | `vldb-lancedb` | 向量表管理、向量写入、近邻检索、条件删除、删表 | Agent Memory、本地 RAG、语义检索、遗忘与清理 |
 | `vldb-duckdb` | 参数化 SQL 执行、轻量 JSON 查询、Arrow IPC 流式查询 | 本地分析、统计计数、表格查询接口、ETL 辅助 |
+| `vldb-manager` | 跨平台终端 UI，用来生成配置、构建服务、控制进程和查看输出 | 用统一的 Rust 界面替代分散的 shell / PowerShell 控制脚本 |
 
-两个服务都带有 Go 示例客户端和 Docker 打包配置。
+两个网关服务都带有 Go 示例客户端和 Docker 打包配置，而 `vldb-manager` 提供本地运维入口。
 
 ## 这个项目适合什么场景
 
@@ -122,6 +124,9 @@ cargo build
 
 cd ../vldb-duckdb
 cargo build
+
+cd ../vldb-manager
+cargo build
 ```
 
 ### 本地构建 Docker 镜像
@@ -137,6 +142,7 @@ cargo build
 .
 |-- vldb-lancedb/
 |-- vldb-duckdb/
+|-- vldb-manager/
 |-- docs/
 |-- docker-compose.example.yml
 |-- README.md
@@ -168,10 +174,14 @@ cargo build
   - `vldb-duckdb`
     - 中文：[docs/vldb-duckdb.zh-CN.md](./docs/vldb-duckdb.zh-CN.md)
     - English: [docs/vldb-duckdb.en.md](./docs/vldb-duckdb.en.md)
+- 管理器说明：
+  - `vldb-manager`
+    - README：[vldb-manager/README.md](./vldb-manager/README.md)
 
 ## 当前状态
 
 - 两个 Rust 服务都可以完成 `cargo build` 和 `cargo build --release`
+- `vldb-manager` 已作为 Rust 2024 + `ratatui` 终端界面加入工作区
 - 两个 Go 示例客户端都可以构建并运行
 - 两个服务都已经完成本地 gRPC 端到端 smoke test
 - 两个服务都提供 Docker 打包与部署方式

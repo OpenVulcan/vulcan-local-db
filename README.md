@@ -2,10 +2,11 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-VulcanLocalDB is a local-first data gateway workspace for applications and AI agents that need fast, structured access to private data without pushing everything into a remote service. It packages two Rust gRPC services:
+VulcanLocalDB is a local-first data gateway workspace for applications and AI agents that need fast, structured access to private data without pushing everything into a remote service. It packages two Rust gRPC services and one Rust terminal manager:
 
 - `vldb-lancedb`: a vector data gateway built on LanceDB
 - `vldb-duckdb`: a SQL and analytics gateway built on DuckDB
+- `vldb-manager`: a cross-platform `ratatui` control plane for building, starting, stopping, and monitoring the local gateways
 
 Together they give you a simple local deployment model:
 
@@ -20,8 +21,9 @@ Together they give you a simple local deployment model:
 | --- | --- | --- |
 | `vldb-lancedb` | Vector table management, vector upsert, nearest-neighbor search, conditional delete, and table drop | Agent memory, local RAG, semantic search, forgetting and cleanup |
 | `vldb-duckdb` | Parameterized SQL execution, lightweight JSON queries, and Arrow IPC streaming | Local analytics, counters, tabular query APIs, ETL helpers |
+| `vldb-manager` | Cross-platform terminal UI for config generation, builds, process control, and output inspection | Replace scattered shell / PowerShell control scripts with a unified Rust interface |
 
-Both services include Go demo clients and Docker packaging.
+The two gateway services include Go demo clients and Docker packaging, while `vldb-manager` provides a local operator UI.
 
 ## Why This Project Exists
 
@@ -122,6 +124,9 @@ cargo build
 
 cd ../vldb-duckdb
 cargo build
+
+cd ../vldb-manager
+cargo build
 ```
 
 ### Build Docker Images Locally
@@ -137,6 +142,7 @@ For local image builds, Dockerfiles, compose-based development, and custom Docke
 .
 |-- vldb-lancedb/
 |-- vldb-duckdb/
+|-- vldb-manager/
 |-- docs/
 |-- docker-compose.example.yml
 |-- README.md
@@ -168,10 +174,14 @@ For local image builds, Dockerfiles, compose-based development, and custom Docke
   - `vldb-duckdb`
     - English: [docs/vldb-duckdb.en.md](./docs/vldb-duckdb.en.md)
     - Chinese: [docs/vldb-duckdb.zh-CN.md](./docs/vldb-duckdb.zh-CN.md)
+- Manager guide:
+  - `vldb-manager`
+    - README: [vldb-manager/README.md](./vldb-manager/README.md)
 
 ## Current Status
 
 - both Rust services build in `debug` and `release`
+- `vldb-manager` builds as a Rust 2024 terminal UI with `ratatui`
 - both Go demo clients build and run
 - both services have been smoke-tested end-to-end through local gRPC clients
 - Docker packaging is available for both services
