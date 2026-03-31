@@ -1,4 +1,5 @@
 mod config;
+mod db_lock;
 mod logging;
 mod service;
 
@@ -7,6 +8,7 @@ pub mod pb {
 }
 
 use crate::config::{BoxError, load_config};
+use crate::db_lock::DatabaseFileLock;
 use crate::logging::ServiceLogger;
 use crate::pb::duck_db_service_server::DuckDbServiceServer;
 use crate::service::{DuckDbGrpcService, apply_connection_pragmas};
@@ -30,6 +32,14 @@ async fn main() -> Result<(), BoxError> {
         std::fs::create_dir_all(parent)?;
     }
 
+    let db_file_lock = if config.hardening.enforce_db_file_lock
+        && config.db_path.to_string_lossy() != ":memory:"
+    {
+        Some(DatabaseFileLock::acquire(&config.db_path)?)
+    } else {
+        None
+    };
+
     let logger = ServiceLogger::new("vldb-duckdb", &config.logging)?;
 
     let conn = Connection::open(&config.db_path)?;
@@ -42,6 +52,54 @@ async fn main() -> Result<(), BoxError> {
         "memory_limit: {} | threads: {}",
         config.memory_limit, config.threads
     );
+    println!(
+        "hardening: db_file_lock={} external_access={} lock_configuration={} checkpoint_on_shutdown={} allowed_directories={} allowed_paths={} autoload_known_extensions={} autoinstall_known_extensions={} allow_community_extensions={}",
+        if config.hardening.enforce_db_file_lock {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        if config.hardening.enable_external_access {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        if config.hardening.lock_configuration {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        if config.hardening.checkpoint_on_shutdown {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        config.hardening.allowed_directories.len(),
+        config.hardening.allowed_paths.len(),
+        if config.hardening.autoload_known_extensions {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        if config.hardening.autoinstall_known_extensions {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        if config.hardening.allow_community_extensions {
+            "enabled"
+        } else {
+            "disabled"
+        },
+    );
+    if let Some(db_file_lock) = &db_file_lock {
+        println!("database lock file: {}", db_file_lock.path().display());
+    }
+    if config.hardening.enable_external_access {
+        eprintln!(
+            "warning: hardening.enable_external_access=true allows SQL to read/write external files and ATTACH other databases"
+        );
+    }
     if let Some(log_path) = logger.log_path() {
         println!("request log file: {}", log_path.display());
     } else if config.logging.enabled {
@@ -55,6 +113,8 @@ async fn main() -> Result<(), BoxError> {
         .add_service(DuckDbServiceServer::new(svc))
         .serve_with_shutdown(addr, shutdown_signal())
         .await?;
+
+    drop(db_file_lock);
 
     Ok(())
 }

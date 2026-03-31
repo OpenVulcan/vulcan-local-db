@@ -294,11 +294,79 @@ impl DuckDbService for DuckDbGrpcService {
 
 pub fn apply_connection_pragmas(conn: &Connection, config: &Config) -> duckdb::Result<()> {
     let escaped_memory_limit = config.memory_limit.replace('\'', "''");
-    let sql = format!(
-        "PRAGMA memory_limit='{}'; PRAGMA threads={};",
-        escaped_memory_limit, config.threads
-    );
+    let hardening = &config.hardening;
+    let mut statements = vec![
+        format!("PRAGMA memory_limit='{}'", escaped_memory_limit),
+        format!("PRAGMA threads={}", config.threads),
+    ];
+
+    if !hardening.allowed_directories.is_empty() {
+        statements.push(format!(
+            "SET allowed_directories = {}",
+            sql_string_list(
+                hardening
+                    .allowed_directories
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .as_slice()
+            )
+        ));
+    }
+    if !hardening.allowed_paths.is_empty() {
+        statements.push(format!(
+            "SET allowed_paths = {}",
+            sql_string_list(
+                hardening
+                    .allowed_paths
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .as_slice()
+            )
+        ));
+    }
+
+    statements.push(format!(
+        "SET enable_external_access = {}",
+        sql_bool(hardening.enable_external_access)
+    ));
+    statements.push(format!(
+        "SET allow_community_extensions = {}",
+        sql_bool(hardening.allow_community_extensions)
+    ));
+    statements.push(format!(
+        "SET autoload_known_extensions = {}",
+        sql_bool(hardening.autoload_known_extensions)
+    ));
+    statements.push(format!(
+        "SET autoinstall_known_extensions = {}",
+        sql_bool(hardening.autoinstall_known_extensions)
+    ));
+    statements.push(if hardening.checkpoint_on_shutdown {
+        "PRAGMA enable_checkpoint_on_shutdown".to_string()
+    } else {
+        "PRAGMA disable_checkpoint_on_shutdown".to_string()
+    });
+    if hardening.lock_configuration {
+        statements.push("SET lock_configuration = true".to_string());
+    }
+
+    let sql = format!("{};", statements.join("; "));
     conn.execute_batch(&sql)
+}
+
+fn sql_bool(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
+}
+
+fn sql_string_list(values: &[String]) -> String {
+    let quoted = values
+        .iter()
+        .map(|value| format!("'{}'", value.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{quoted}]")
 }
 
 async fn acquire_execution_permit(
@@ -1163,7 +1231,12 @@ impl Write for GrpcChunkWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_grpc_timeout_header, preview_sql, should_reset_shared_connection};
+    use super::{
+        apply_connection_pragmas, parse_grpc_timeout_header, preview_sql,
+        should_reset_shared_connection, sql_string_list,
+    };
+    use crate::config::Config;
+    use duckdb::Connection;
     use std::time::Duration;
 
     #[test]
@@ -1227,5 +1300,42 @@ mod tests {
         assert!(!should_reset_shared_connection(
             "Catalog Error: Table with name demo does not exist"
         ));
+    }
+
+    #[test]
+    fn sql_string_list_escapes_single_quotes() {
+        assert_eq!(
+            sql_string_list(&[
+                "C:/safe/data".to_string(),
+                "C:/team/it's-ok.csv".to_string()
+            ]),
+            "['C:/safe/data', 'C:/team/it''s-ok.csv']"
+        );
+    }
+
+    #[test]
+    fn apply_connection_pragmas_supports_default_hardening_profile() {
+        let conn = Connection::open_in_memory().expect("open in-memory connection");
+        let config = Config::default();
+
+        apply_connection_pragmas(&conn, &config).expect("apply hardening pragmas");
+
+        let external_access: bool = conn
+            .query_row(
+                "SELECT current_setting('enable_external_access')::BOOLEAN",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read enable_external_access");
+        let lock_configuration: bool = conn
+            .query_row(
+                "SELECT current_setting('lock_configuration')::BOOLEAN",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read lock_configuration");
+
+        assert!(!external_access);
+        assert!(lock_configuration);
     }
 }

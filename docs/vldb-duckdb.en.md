@@ -93,6 +93,17 @@ Default example:
   "db_path": "./data/duckdb.db",
   "memory_limit": "2GB",
   "threads": 4,
+  "hardening": {
+    "enforce_db_file_lock": true,
+    "enable_external_access": false,
+    "allowed_directories": [],
+    "allowed_paths": [],
+    "allow_community_extensions": false,
+    "autoload_known_extensions": false,
+    "autoinstall_known_extensions": false,
+    "lock_configuration": true,
+    "checkpoint_on_shutdown": true
+  },
   "logging": {
     "enabled": true,
     "file_enabled": true,
@@ -115,6 +126,15 @@ Fields:
 - `db_path`: DuckDB database file path
 - `memory_limit`: DuckDB `PRAGMA memory_limit`
 - `threads`: DuckDB `PRAGMA threads`
+- `hardening.enforce_db_file_lock`: keep a process-level lock file next to the database so another `vldb-duckdb` process cannot reuse the same database path by accident
+- `hardening.enable_external_access`: allow SQL to access files other than the primary database file; disabled by default
+- `hardening.allowed_directories`: directory allowlist that remains accessible when external access is disabled
+- `hardening.allowed_paths`: file allowlist that remains accessible when external access is disabled
+- `hardening.allow_community_extensions`: allow community extensions
+- `hardening.autoload_known_extensions`: allow automatic loading of known extensions
+- `hardening.autoinstall_known_extensions`: allow automatic installation of known extensions
+- `hardening.lock_configuration`: lock DuckDB configuration after startup so these guardrails cannot be changed inside the session
+- `hardening.checkpoint_on_shutdown`: run a checkpoint on graceful shutdown to reduce leftover WAL state
 - `logging.enabled`: master switch for service request logging
 - `logging.file_enabled`: write logs to a file under the resolved log directory
 - `logging.stderr_enabled`: mirror logs to stderr
@@ -140,6 +160,7 @@ Path handling:
 - `~` is supported
 - when `logging.log_dir` is empty, `./data/duckdb.db` resolves logs to `./data/duckdb_log/`
 - daily log files are written as `vldb-duckdb_YYYY-MM-DD.log`
+- relative entries in `hardening.allowed_directories` and `hardening.allowed_paths` are also resolved from the config file directory
 
 ## How To Call The RPCs
 
@@ -254,8 +275,20 @@ The example client:
 - `QueryJson` is the lighter option for counters and other small result sets
 - `QueryStream` returns Arrow IPC bytes, not JSON
 - the service keeps one shared DuckDB connection open and serializes request execution through that single connection
+- by default the service also holds a sibling lock file such as `duckdb.db.vldb.lock` so a second `vldb-duckdb` process cannot silently target the same database file
 - `memory_limit` and `threads` are applied when the shared DuckDB connection starts
+- the default hardening profile disables external file access, community extensions, and automatic extension installation/loading, then locks the relevant DuckDB settings; only opt out if you explicitly need `read_csv`, `COPY`, `ATTACH`, or extension workflows
 - timeout and slow-query logs now include the last execution stage, such as `waiting_for_connection`, `acquiring_connection_lock`, `preparing_statement`, `executing_query`, `fetching_rows`, or `serializing_json`
 - request logging and slow-query logging are enabled by default
 - there is no built-in auth, ACL, or TLS layer
 - clients should consume the full stream to receive the complete result
+- if a write returns `ABORTED`, treat it as "commit outcome may already be durable" and inspect state before retrying
+
+## Schema Risk Checklist
+
+- Do not allocate numeric IDs with `SELECT MAX(id) + 1`. Prefer `CREATE SEQUENCE ...` plus `DEFAULT nextval('...')`, or use UUID primary keys.
+- DuckDB automatically creates ART indexes for `PRIMARY KEY`, `UNIQUE`, and `FOREIGN KEY`. They enforce correctness, but they also increase write cost and can surface conflicts when constrained values are updated in place.
+- Prefer immutable surrogate keys. If a business identifier must change, use a new column or a copy-and-swap migration instead of mass-updating primary keys in place.
+- `VACUUM` does not physically shrink the database file at the filesystem level. After large deletes or rewrites, pair maintenance with `CHECKPOINT`, or export/rebuild the file when you need real disk compaction.
+- For heavy schema changes on indexed tables, prefer "create new table -> backfill -> switch over" migrations instead of complex in-place `ALTER TABLE` sequences.
+- Keep time columns in a consistent UTC representation unless you explicitly need session time zone semantics. `TIMESTAMPTZ` is powerful, but mixed client time zones can change date boundaries in surprising ways.

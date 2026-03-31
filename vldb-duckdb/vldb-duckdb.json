@@ -4,6 +4,17 @@
   "db_path": "./data/duckdb.db",
   "memory_limit": "2GB",
   "threads": 4,
+  "hardening": {
+    "enforce_db_file_lock": true,
+    "enable_external_access": false,
+    "allowed_directories": [],
+    "allowed_paths": [],
+    "allow_community_extensions": false,
+    "autoload_known_extensions": false,
+    "autoinstall_known_extensions": false,
+    "lock_configuration": true,
+    "checkpoint_on_shutdown": true
+  },
   "logging": {
     "enabled": true,
     "file_enabled": true,

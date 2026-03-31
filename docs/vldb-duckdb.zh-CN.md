@@ -93,6 +93,17 @@ docker run -d \
   "db_path": "./data/duckdb.db",
   "memory_limit": "2GB",
   "threads": 4,
+  "hardening": {
+    "enforce_db_file_lock": true,
+    "enable_external_access": false,
+    "allowed_directories": [],
+    "allowed_paths": [],
+    "allow_community_extensions": false,
+    "autoload_known_extensions": false,
+    "autoinstall_known_extensions": false,
+    "lock_configuration": true,
+    "checkpoint_on_shutdown": true
+  },
   "logging": {
     "enabled": true,
     "file_enabled": true,
@@ -115,6 +126,15 @@ docker run -d \
 - `db_path`：DuckDB 数据库文件路径
 - `memory_limit`：DuckDB `PRAGMA memory_limit`
 - `threads`：DuckDB `PRAGMA threads`
+- `hardening.enforce_db_file_lock`：是否在数据库文件旁边持有一个进程级锁文件，防止另一个 `vldb-duckdb` 进程误用同一数据库
+- `hardening.enable_external_access`：是否允许 SQL 访问数据库文件之外的本地/远程文件；默认关闭
+- `hardening.allowed_directories`：在关闭外部访问时，仍允许访问的目录白名单
+- `hardening.allowed_paths`：在关闭外部访问时，仍允许访问的文件白名单
+- `hardening.allow_community_extensions`：是否允许社区扩展
+- `hardening.autoload_known_extensions`：是否允许自动加载已知扩展
+- `hardening.autoinstall_known_extensions`：是否允许自动安装已知扩展
+- `hardening.lock_configuration`：启动后是否锁定 DuckDB 配置，阻止会话内再修改这些安全设置
+- `hardening.checkpoint_on_shutdown`：正常退出时是否执行 checkpoint，减少 WAL 残留
 - `logging.enabled`：服务日志总开关
 - `logging.file_enabled`：是否写入日志文件
 - `logging.stderr_enabled`：是否同时输出到标准错误
@@ -140,6 +160,7 @@ docker run -d \
 - 支持 `~`
 - `logging.log_dir` 为空时，`./data/duckdb.db` 会把日志写到 `./data/duckdb_log/`
 - 每天的日志文件会按 `vldb-duckdb_YYYY-MM-DD.log` 这样的形式分离
+- `hardening.allowed_directories` 和 `hardening.allowed_paths` 里的相对路径也会按配置文件目录展开
 
 ## 如何调用函数
 
@@ -253,8 +274,20 @@ go run . -addr 127.0.0.1:50052 -out ./query.arrow.stream
 - `QueryJson` 适合轻量结果；大结果集仍建议使用 `QueryStream`
 - `QueryStream` 的结果是 Arrow IPC 字节流，不是 JSON
 - 服务内部会保持单个共享 DuckDB 连接，并通过这个连接串行执行请求
+- 默认会在数据库文件旁边创建一个锁文件，例如 `duckdb.db.vldb.lock`，避免第二个 `vldb-duckdb` 进程悄悄复用同一个数据库文件
 - `memory_limit` 和 `threads` 会在共享连接启动时应用
+- 默认安全加固会关闭外部文件访问、社区扩展、已知扩展的自动安装/自动加载，并锁定配置。如果确实需要 `read_csv`、`COPY`、`ATTACH` 或扩展工作流，再通过 `hardening` 显式放开
 - 超时日志和慢 SQL 日志现在会带上最后执行阶段，例如 `waiting_for_connection`、`acquiring_connection_lock`、`preparing_statement`、`executing_query`、`fetching_rows`、`serializing_json`
 - 默认启用请求日志和慢 SQL 日志
 - 当前服务没有内置认证、鉴权和 TLS
 - 如果客户端不消费完整流，查询结果可能只部分到达
+- 如果写请求收到 `ABORTED`，要把它理解成“提交结果不确定，先查库再决定是否重试”，不要直接盲重试
+
+## 数据结构风险清单
+
+- 不要用 `SELECT MAX(id) + 1` 分配主键。推荐 `CREATE SEQUENCE ...` + `DEFAULT nextval('...')`，或者直接用 UUID 主键。
+- DuckDB 会为 `PRIMARY KEY`、`UNIQUE`、`FOREIGN KEY` 自动创建 ART 索引。它们能保证约束，但也会放大写入成本，并让更新约束列时更容易暴露冲突。
+- 尽量把主键和唯一业务键设计成不可变。需要变更业务编码时，优先新写一列或做 copy-and-swap 迁移，不要原地批量更新主键。
+- `VACUUM` 不会把数据库文件物理缩小到操作系统层面。大量删除或重写后，如果要真正回收磁盘空间，要配合 `CHECKPOINT`，或者导出/重建数据库文件。
+- 重索引、补约束、重命名或重写重度索引表时，优先采用“新表建好 -> 回填 -> 切换”的迁移方式，风险比直接在老表上做复杂 `ALTER TABLE` 更低。
+- 如果表里需要时间列，尽量统一成 UTC 语义；只有在明确需要会话时区语义时才使用 `TIMESTAMPTZ`，否则不同客户端时区可能看到不一致的日期边界。

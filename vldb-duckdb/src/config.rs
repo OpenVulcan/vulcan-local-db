@@ -16,7 +16,22 @@ pub struct Config {
     pub db_path: PathBuf,
     pub memory_limit: String,
     pub threads: usize,
+    pub hardening: HardeningConfig,
     pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HardeningConfig {
+    pub enforce_db_file_lock: bool,
+    pub enable_external_access: bool,
+    pub allowed_directories: Vec<PathBuf>,
+    pub allowed_paths: Vec<PathBuf>,
+    pub allow_community_extensions: bool,
+    pub autoload_known_extensions: bool,
+    pub autoinstall_known_extensions: bool,
+    pub lock_configuration: bool,
+    pub checkpoint_on_shutdown: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,7 +57,24 @@ impl Default for Config {
             db_path: PathBuf::from("./data/duckdb.db"),
             memory_limit: "2GB".to_string(),
             threads: 4,
+            hardening: HardeningConfig::default(),
             logging: LoggingConfig::default(),
+        }
+    }
+}
+
+impl Default for HardeningConfig {
+    fn default() -> Self {
+        Self {
+            enforce_db_file_lock: true,
+            enable_external_access: false,
+            allowed_directories: Vec::new(),
+            allowed_paths: Vec::new(),
+            allow_community_extensions: false,
+            autoload_known_extensions: false,
+            autoinstall_known_extensions: false,
+            lock_configuration: true,
+            checkpoint_on_shutdown: true,
         }
     }
 }
@@ -78,7 +110,19 @@ impl Config {
         if self.threads == 0 {
             return Err(invalid_input("config.threads must be greater than 0"));
         }
+        self.hardening.validate()?;
         self.logging.validate()?;
+        Ok(())
+    }
+}
+
+impl HardeningConfig {
+    fn validate(&self) -> Result<(), BoxError> {
+        validate_path_list(
+            &self.allowed_directories,
+            "config.hardening.allowed_directories",
+        )?;
+        validate_path_list(&self.allowed_paths, "config.hardening.allowed_paths")?;
         Ok(())
     }
 }
@@ -124,6 +168,7 @@ pub fn load_config() -> Result<LoadedConfig, BoxError> {
     let cwd = env::current_dir()?;
     let mut config = Config::default();
     config.db_path = expand_path(&config.db_path, &cwd)?;
+    config.hardening = resolve_hardening_config(&config.hardening, &cwd)?;
     config.logging.log_dir = resolve_log_dir(&config.logging.log_dir, &config.db_path, &cwd)?;
     config.validate()?;
 
@@ -146,6 +191,7 @@ fn load_config_file(path: PathBuf) -> Result<LoadedConfig, BoxError> {
         .unwrap_or_else(|| cwd.clone());
 
     config.db_path = expand_path(&config.db_path, &base_dir)?;
+    config.hardening = resolve_hardening_config(&config.hardening, &base_dir)?;
     config.logging.log_dir = resolve_log_dir(&config.logging.log_dir, &config.db_path, &base_dir)?;
     config.validate()?;
 
@@ -221,6 +267,30 @@ fn resolve_log_dir(
     expand_path(configured_dir, base_dir)
 }
 
+fn resolve_hardening_config(
+    hardening: &HardeningConfig,
+    base_dir: &Path,
+) -> Result<HardeningConfig, BoxError> {
+    Ok(HardeningConfig {
+        enforce_db_file_lock: hardening.enforce_db_file_lock,
+        enable_external_access: hardening.enable_external_access,
+        allowed_directories: expand_path_list(&hardening.allowed_directories, base_dir)?,
+        allowed_paths: expand_path_list(&hardening.allowed_paths, base_dir)?,
+        allow_community_extensions: hardening.allow_community_extensions,
+        autoload_known_extensions: hardening.autoload_known_extensions,
+        autoinstall_known_extensions: hardening.autoinstall_known_extensions,
+        lock_configuration: hardening.lock_configuration,
+        checkpoint_on_shutdown: hardening.checkpoint_on_shutdown,
+    })
+}
+
+fn expand_path_list(paths: &[PathBuf], base_dir: &Path) -> Result<Vec<PathBuf>, BoxError> {
+    paths
+        .iter()
+        .map(|path| expand_path(path, base_dir))
+        .collect()
+}
+
 fn derive_default_log_dir(db_path: &Path) -> PathBuf {
     let parent = db_path
         .parent()
@@ -291,9 +361,23 @@ fn invalid_input(message: impl Into<String>) -> BoxError {
     ))
 }
 
+fn validate_path_list(paths: &[PathBuf], field_name: &str) -> Result<(), BoxError> {
+    for path in paths {
+        if path.as_os_str().is_empty() {
+            return Err(invalid_input(format!(
+                "{field_name} must not contain empty paths"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{derive_default_log_dir, resolve_log_dir};
+    use super::{
+        HardeningConfig, derive_default_log_dir, resolve_hardening_config, resolve_log_dir,
+    };
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -315,5 +399,27 @@ mod tests {
         .expect("resolve log dir");
 
         assert_eq!(resolved, PathBuf::from("/etc/vldb/logs"));
+    }
+
+    #[test]
+    fn hardening_paths_are_resolved_from_config_dir() {
+        let resolved = resolve_hardening_config(
+            &HardeningConfig {
+                allowed_directories: vec![PathBuf::from("./allowed-dir")],
+                allowed_paths: vec![PathBuf::from("./allowed-file.csv")],
+                ..HardeningConfig::default()
+            },
+            Path::new("/etc/vldb"),
+        )
+        .expect("resolve hardening config");
+
+        assert_eq!(
+            resolved.allowed_directories,
+            vec![PathBuf::from("/etc/vldb/allowed-dir")]
+        );
+        assert_eq!(
+            resolved.allowed_paths,
+            vec![PathBuf::from("/etc/vldb/allowed-file.csv")]
+        );
     }
 }
