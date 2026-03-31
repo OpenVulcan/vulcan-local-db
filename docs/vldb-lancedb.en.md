@@ -95,6 +95,7 @@ Default example:
   "host": "127.0.0.1",
   "port": 50051,
   "db_path": "./data",
+  "read_consistency_interval_ms": 0,
   "logging": {
     "enabled": true,
     "file_enabled": true,
@@ -115,6 +116,7 @@ Fields:
 - `host`: gRPC bind host
 - `port`: gRPC bind port
 - `db_path`: LanceDB directory path or remote URI
+- `read_consistency_interval_ms`: refresh interval for updates written by other processes; default `0` means check on every read, non-zero values provide eventual consistency, and `null` disables cross-process refresh checks
 - `logging.enabled`: master switch for service request logging
 - `logging.file_enabled`: write logs to a file under the resolved log directory
 - `logging.stderr_enabled`: mirror logs to stderr
@@ -142,6 +144,8 @@ Path handling:
 - local directories are created automatically if they do not exist
 - when `logging.log_dir` is empty and `db_path` is local, logs are stored under `<db_path>/logs/`
 - daily log files are written as `vldb-lancedb_YYYY-MM-DD.log`
+- the service coordinates access per table name: writes to the same table are serialized, and reads do not run concurrently with drop / overwrite operations on that table
+- if `db_path` uses plain `s3://`, the service prints a warning; switch to `s3+ddb://` when multiple writers or multiple service instances may target the same tables
 
 ## How To Call The RPCs
 

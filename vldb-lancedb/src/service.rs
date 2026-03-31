@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -21,6 +23,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::table::AddDataMode;
 use lancedb::{Connection, Table};
 use serde_json::{Map, Value};
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use tonic::{Request, Response, Status};
 
 use crate::config::LoggingConfig;
@@ -40,6 +43,35 @@ pub struct LanceDbGrpcService {
 struct ServiceState {
     db: Arc<Connection>,
     logger: Arc<ServiceLogger>,
+    table_access: TableAccessCoordinator,
+}
+
+#[derive(Default)]
+struct TableAccessCoordinator {
+    locks: Mutex<HashMap<String, Arc<RwLock<()>>>>,
+}
+
+impl TableAccessCoordinator {
+    fn lock_for(&self, table_name: &str) -> Arc<RwLock<()>> {
+        let mut guard = self
+            .locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        Arc::clone(
+            guard
+                .entry(normalize_table_name(table_name))
+                .or_insert_with(|| Arc::new(RwLock::new(()))),
+        )
+    }
+
+    async fn acquire_read(&self, table_name: &str) -> OwnedRwLockReadGuard<()> {
+        self.lock_for(table_name).read_owned().await
+    }
+
+    async fn acquire_write(&self, table_name: &str) -> OwnedRwLockWriteGuard<()> {
+        self.lock_for(table_name).write_owned().await
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +94,7 @@ impl LanceDbGrpcService {
             state: Arc::new(ServiceState {
                 db: Arc::new(db),
                 logger,
+                table_access: TableAccessCoordinator::default(),
             }),
         }
     }
@@ -73,6 +106,14 @@ impl LanceDbGrpcService {
             .execute()
             .await
             .map_err(to_status)
+    }
+
+    async fn acquire_table_read(&self, table_name: &str) -> OwnedRwLockReadGuard<()> {
+        self.state.table_access.acquire_read(table_name).await
+    }
+
+    async fn acquire_table_write(&self, table_name: &str) -> OwnedRwLockWriteGuard<()> {
+        self.state.table_access.acquire_write(table_name).await
     }
 }
 
@@ -97,8 +138,9 @@ impl LanceDbService for LanceDbGrpcService {
         );
         log_request_started(&context);
         let req = request.into_inner();
+        let table_name = normalize_table_name(&req.table_name);
 
-        if req.table_name.trim().is_empty() {
+        if table_name.is_empty() {
             let status = Status::invalid_argument("table_name must not be empty");
             log_request_failed(&context, &status);
             return Err(status);
@@ -116,10 +158,8 @@ impl LanceDbService for LanceDbGrpcService {
                 return Err(status);
             }
         };
-        let mut builder = self
-            .state
-            .db
-            .create_empty_table(req.table_name.clone(), schema);
+        let _table_guard = self.acquire_table_write(&table_name).await;
+        let mut builder = self.state.db.create_empty_table(table_name.clone(), schema);
         builder = if req.overwrite_if_exists {
             builder.mode(CreateTableMode::Overwrite)
         } else {
@@ -136,7 +176,7 @@ impl LanceDbService for LanceDbGrpcService {
 
         let response = CreateTableResponse {
             success: true,
-            message: format!("table '{}' is ready", req.table_name),
+            message: format!("table '{}' is ready", table_name),
         };
         log_request_succeeded(&context, response.message.as_str());
         Ok(Response::new(response))
@@ -160,14 +200,16 @@ impl LanceDbService for LanceDbGrpcService {
         );
         log_request_started(&context);
         let req = request.into_inner();
+        let table_name = normalize_table_name(&req.table_name);
 
-        if req.table_name.trim().is_empty() {
+        if table_name.is_empty() {
             let status = Status::invalid_argument("table_name must not be empty");
             log_request_failed(&context, &status);
             return Err(status);
         }
 
-        let table = match self.open_table(&req.table_name).await {
+        let _table_guard = self.acquire_table_write(&table_name).await;
+        let table = match self.open_table(&table_name).await {
             Ok(table) => table,
             Err(status) => {
                 log_request_failed(&context, &status);
@@ -310,8 +352,11 @@ impl LanceDbService for LanceDbGrpcService {
         );
         log_request_started(&context);
         let req = request.into_inner();
+        let table_name = normalize_table_name(&req.table_name);
+        let vector_column = req.vector_column.trim().to_string();
+        let filter = req.filter.trim().to_string();
 
-        if req.table_name.trim().is_empty() {
+        if table_name.is_empty() {
             let status = Status::invalid_argument("table_name must not be empty");
             log_request_failed(&context, &status);
             return Err(status);
@@ -322,7 +367,8 @@ impl LanceDbService for LanceDbGrpcService {
             return Err(status);
         }
 
-        let table = match self.open_table(&req.table_name).await {
+        let _table_guard = self.acquire_table_read(&table_name).await;
+        let table = match self.open_table(&table_name).await {
             Ok(table) => table,
             Err(status) => {
                 log_request_failed(&context, &status);
@@ -339,8 +385,8 @@ impl LanceDbService for LanceDbGrpcService {
             }
         };
 
-        if !req.vector_column.trim().is_empty() {
-            query = query.column(req.vector_column.trim());
+        if !vector_column.is_empty() {
+            query = query.column(&vector_column);
         }
 
         let limit = if req.limit == 0 {
@@ -350,8 +396,8 @@ impl LanceDbService for LanceDbGrpcService {
         };
         query = query.limit(limit);
 
-        if !req.filter.trim().is_empty() {
-            query = query.only_if(req.filter.trim());
+        if !filter.is_empty() {
+            query = query.only_if(filter);
         }
 
         let output_schema = match query.output_schema().await.map_err(to_status) {
@@ -433,26 +479,29 @@ impl LanceDbService for LanceDbGrpcService {
         );
         log_request_started(&context);
         let req = request.into_inner();
+        let table_name = normalize_table_name(&req.table_name);
+        let condition = req.condition.trim().to_string();
 
-        if req.table_name.trim().is_empty() {
+        if table_name.is_empty() {
             let status = Status::invalid_argument("table_name must not be empty");
             log_request_failed(&context, &status);
             return Err(status);
         }
-        if req.condition.trim().is_empty() {
+        if condition.is_empty() {
             let status = Status::invalid_argument("condition must not be empty");
             log_request_failed(&context, &status);
             return Err(status);
         }
 
-        let table = match self.open_table(&req.table_name).await {
+        let _table_guard = self.acquire_table_write(&table_name).await;
+        let table = match self.open_table(&table_name).await {
             Ok(table) => table,
             Err(status) => {
                 log_request_failed(&context, &status);
                 return Err(status);
             }
         };
-        let result = match table.delete(req.condition.trim()).await.map_err(to_status) {
+        let result = match table.delete(&condition).await.map_err(to_status) {
             Ok(result) => result,
             Err(status) => {
                 log_request_failed(&context, &status);
@@ -462,7 +511,7 @@ impl LanceDbService for LanceDbGrpcService {
 
         let response = DeleteResponse {
             success: true,
-            message: format!("delete completed for '{}'", req.table_name),
+            message: format!("delete completed for '{}'", table_name),
             version: result.version,
             deleted_rows: result.num_deleted_rows,
         };
@@ -482,17 +531,19 @@ impl LanceDbService for LanceDbGrpcService {
         );
         log_request_started(&context);
         let req = request.into_inner();
+        let table_name = normalize_table_name(&req.table_name);
 
-        if req.table_name.trim().is_empty() {
+        if table_name.is_empty() {
             let status = Status::invalid_argument("table_name must not be empty");
             log_request_failed(&context, &status);
             return Err(status);
         }
 
+        let _table_guard = self.acquire_table_write(&table_name).await;
         match self
             .state
             .db
-            .drop_table(req.table_name.clone(), &[])
+            .drop_table(table_name.clone(), &[])
             .await
             .map_err(to_status)
         {
@@ -505,11 +556,15 @@ impl LanceDbService for LanceDbGrpcService {
 
         let response = DropTableResponse {
             success: true,
-            message: format!("table '{}' dropped", req.table_name),
+            message: format!("table '{}' dropped", table_name),
         };
         log_request_succeeded(&context, response.message.as_str());
         Ok(Response::new(response))
     }
+}
+
+fn normalize_table_name(table_name: &str) -> String {
+    table_name.trim().to_string()
 }
 
 fn build_request_context(
@@ -1117,7 +1172,9 @@ fn to_status<E: std::fmt::Display>(error: E) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use super::preview_text;
+    use std::sync::Arc;
+
+    use super::{TableAccessCoordinator, normalize_table_name, preview_text};
 
     #[test]
     fn preview_text_compacts_whitespace_and_truncates() {
@@ -1132,5 +1189,37 @@ mod tests {
     #[test]
     fn preview_text_marks_empty_input() {
         assert_eq!(preview_text(" \n\t ", 64), "<empty>");
+    }
+
+    #[test]
+    fn normalize_table_name_trims_whitespace() {
+        assert_eq!(normalize_table_name("  demo  "), "demo");
+    }
+
+    #[tokio::test]
+    async fn table_access_coordinator_reuses_trimmed_table_lock() {
+        let coordinator = TableAccessCoordinator::default();
+        let lock_a = coordinator.lock_for("demo");
+        let lock_b = coordinator.lock_for(" demo ");
+
+        assert!(Arc::ptr_eq(&lock_a, &lock_b));
+    }
+
+    #[tokio::test]
+    async fn table_write_waits_for_active_reader() {
+        let coordinator = Arc::new(TableAccessCoordinator::default());
+        let reader_guard = coordinator.acquire_read("demo").await;
+        let writer = {
+            let coordinator = Arc::clone(&coordinator);
+            tokio::spawn(async move {
+                let _writer_guard = coordinator.acquire_write(" demo ").await;
+            })
+        };
+
+        tokio::task::yield_now().await;
+        assert!(!writer.is_finished());
+
+        drop(reader_guard);
+        writer.await.unwrap();
     }
 }

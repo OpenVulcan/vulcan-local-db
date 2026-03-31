@@ -15,6 +15,7 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub db_path: String,
+    pub read_consistency_interval_ms: Option<u64>,
     pub logging: LoggingConfig,
 }
 
@@ -39,6 +40,7 @@ impl Default for Config {
             host: "127.0.0.1".to_string(),
             port: 50051,
             db_path: "./data".to_string(),
+            read_consistency_interval_ms: Some(0),
             logging: LoggingConfig::default(),
         }
     }
@@ -66,6 +68,7 @@ pub struct ResolvedConfig {
     pub host: String,
     pub port: u16,
     pub db_path: String,
+    pub read_consistency_interval_ms: Option<u64>,
     pub source: Option<PathBuf>,
     pub logging: LoggingConfig,
 }
@@ -73,6 +76,21 @@ pub struct ResolvedConfig {
 impl ResolvedConfig {
     pub fn is_local_db_path(&self) -> bool {
         !looks_like_uri(&self.db_path)
+    }
+
+    pub fn read_consistency_interval(&self) -> Option<std::time::Duration> {
+        self.read_consistency_interval_ms
+            .map(std::time::Duration::from_millis)
+    }
+
+    pub fn concurrent_write_warning(&self) -> Option<&'static str> {
+        if is_plain_s3_uri(&self.db_path) {
+            Some(
+                "plain s3:// storage is not safe for concurrent LanceDB writers; use s3+ddb:// for multi-writer deployments or ensure this service is the only writer for each table",
+            )
+        } else {
+            None
+        }
     }
 }
 
@@ -102,6 +120,7 @@ pub fn load() -> Result<ResolvedConfig, BoxError> {
         host: config.host,
         port: config.port,
         db_path: resolved_db_path,
+        read_consistency_interval_ms: config.read_consistency_interval_ms,
         source,
         logging: config.logging,
     })
@@ -230,6 +249,10 @@ fn looks_like_uri(value: &str) -> bool {
     value.contains("://")
 }
 
+fn is_plain_s3_uri(value: &str) -> bool {
+    value.to_ascii_lowercase().starts_with("s3://")
+}
+
 fn invalid_input(message: impl Into<String>) -> BoxError {
     Box::new(std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
@@ -239,8 +262,9 @@ fn invalid_input(message: impl Into<String>) -> BoxError {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_log_dir;
+    use super::{Config, LoggingConfig, ResolvedConfig, resolve_log_dir};
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     #[test]
     fn default_log_dir_uses_logs_subdir_for_local_db_path() {
@@ -263,5 +287,46 @@ mod tests {
         let resolved =
             resolve_log_dir(Path::new(""), "s3://bucket/lancedb", Path::new("/etc/vldb"));
         assert_eq!(resolved, PathBuf::from("/etc/vldb/vldb-lancedb-logs"));
+    }
+
+    #[test]
+    fn default_read_consistency_interval_is_strong() {
+        assert_eq!(Config::default().read_consistency_interval_ms, Some(0));
+    }
+
+    #[test]
+    fn plain_s3_uri_emits_concurrent_write_warning() {
+        let cfg = ResolvedConfig {
+            host: "127.0.0.1".to_string(),
+            port: 50051,
+            db_path: "s3://bucket/lancedb".to_string(),
+            read_consistency_interval_ms: Some(0),
+            source: None,
+            logging: LoggingConfig::default(),
+        };
+
+        assert_eq!(
+            cfg.read_consistency_interval(),
+            Some(Duration::from_millis(0))
+        );
+        assert!(cfg.concurrent_write_warning().is_some());
+    }
+
+    #[test]
+    fn s3_ddb_uri_does_not_emit_concurrent_write_warning() {
+        let cfg = ResolvedConfig {
+            host: "127.0.0.1".to_string(),
+            port: 50051,
+            db_path: "s3+ddb://bucket/lancedb".to_string(),
+            read_consistency_interval_ms: Some(250),
+            source: None,
+            logging: LoggingConfig::default(),
+        };
+
+        assert_eq!(
+            cfg.read_consistency_interval(),
+            Some(Duration::from_millis(250))
+        );
+        assert!(cfg.concurrent_write_warning().is_none());
     }
 }

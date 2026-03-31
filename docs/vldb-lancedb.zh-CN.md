@@ -95,6 +95,7 @@ docker run -d \
   "host": "127.0.0.1",
   "port": 50051,
   "db_path": "./data",
+  "read_consistency_interval_ms": 0,
   "logging": {
     "enabled": true,
     "file_enabled": true,
@@ -115,6 +116,7 @@ docker run -d \
 - `host`：gRPC 监听地址
 - `port`：gRPC 监听端口
 - `db_path`：LanceDB 数据目录或远程 URI
+- `read_consistency_interval_ms`：读取其他进程写入的刷新间隔；默认 `0` 表示每次读都检查最新版本，非 `0` 表示最终一致，设为 `null` 表示关闭跨进程刷新检查
 - `logging.enabled`：服务日志总开关
 - `logging.file_enabled`：是否写入日志文件
 - `logging.stderr_enabled`：是否同时输出到标准错误
@@ -142,6 +144,8 @@ docker run -d \
 - 本地目录不存在时，服务会自动创建
 - `logging.log_dir` 为空且 `db_path` 为本地目录时，日志默认写入 `<db_path>/logs/`
 - 每天的日志文件会按 `vldb-lancedb_YYYY-MM-DD.log` 这样的形式分离
+- 服务会按表名协调并发访问：同一张表的写操作会串行执行，查询会与同表的删表或覆盖写互斥，以降低提交冲突和元数据竞争
+- 如果 `db_path` 使用普通 `s3://`，服务启动时会给出告警；当存在多写入者或多实例时，应改用 `s3+ddb://`
 
 ## 如何调用函数
 

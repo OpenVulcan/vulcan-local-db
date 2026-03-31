@@ -6,7 +6,7 @@ rust-version = "1.94"
 build = "build.rs"
 
 [dependencies]
-tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread", "fs", "net"] }
+tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread", "fs", "net", "sync"] }
 tonic = { version = "0.14.5", features = ["transport"] }
 tonic-prost = "0.14.5"
 prost = "0.14.3"
