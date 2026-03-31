@@ -8,11 +8,15 @@ RUNNER_DIR="${GLOBAL_HOME}/run"
 LANG_CODE="en"
 INSTALL_DIR=""
 LANCEDB_ROOT="${GLOBAL_HOME}/lancedb"
-DUCKDB_ROOT="${GLOBAL_HOME}/duckdb"
-REPO_SLUG="OpenVulcan/vulcan-local-db"
-REPO_URL="https://github.com/OpenVulcan/vulcan-local-db"
-RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts"
-INSTALL_TAG=""
+SQLITE_ROOT="${GLOBAL_HOME}/sqlite"
+MANAGER_REPO_SLUG="OpenVulcan/vulcan-local-db"
+RAW_BASE_URL="https://raw.githubusercontent.com/${MANAGER_REPO_SLUG}/main/scripts"
+LANCEDB_REPO_SLUG="OpenVulcan/vldb-lancedb"
+LANCEDB_REPO_URL="https://github.com/${LANCEDB_REPO_SLUG}"
+SQLITE_REPO_SLUG="OpenVulcan/vldb-sqlite"
+SQLITE_REPO_URL="https://github.com/${SQLITE_REPO_SLUG}"
+LANCEDB_RELEASE_TAG=""
+SQLITE_RELEASE_TAG=""
 INSTALLED_SCRIPT_VERSION="${SCRIPT_VERSION}"
 LATEST_RELEASE_JSON=""
 PARSED_SERVICE=""
@@ -20,7 +24,7 @@ PARSED_INSTANCE=""
 FROM_INSTALLER=0
 INITIALIZED=0
 DEFAULT_LANCEDB_PORT="19301"
-DEFAULT_DUCKDB_PORT="19401"
+DEFAULT_SQLITE_PORT="19501"
 PROMPT_INPUT_FD=""
 BOX_MIN_WIDTH=18
 BOX_MAX_WIDTH=50
@@ -622,14 +626,52 @@ try_fetch_remote_script_version() {
   printf '%s\n' "${content}" | sed -nE 's/^SCRIPT_VERSION="([^"]+)".*/\1/p' | head -n1
 }
 
-try_fetch_latest_tag() {
+service_repo_slug() {
+  case "$1" in
+    vldb-lancedb) printf '%s' "${LANCEDB_REPO_SLUG}" ;;
+    vldb-sqlite) printf '%s' "${SQLITE_REPO_SLUG}" ;;
+    *) return 1 ;;
+  esac
+}
+
+service_repo_url() {
+  case "$1" in
+    vldb-lancedb) printf '%s' "${LANCEDB_REPO_URL}" ;;
+    vldb-sqlite) printf '%s' "${SQLITE_REPO_URL}" ;;
+    *) return 1 ;;
+  esac
+}
+
+get_service_release_tag() {
+  case "$1" in
+    vldb-lancedb) printf '%s' "${LANCEDB_RELEASE_TAG}" ;;
+    vldb-sqlite) printf '%s' "${SQLITE_RELEASE_TAG}" ;;
+    *) return 1 ;;
+  esac
+}
+
+set_service_release_tag() {
+  local service="$1"
+  local tag="$2"
+
+  case "${service}" in
+    vldb-lancedb) LANCEDB_RELEASE_TAG="${tag}" ;;
+    vldb-sqlite) SQLITE_RELEASE_TAG="${tag}" ;;
+    *) return 1 ;;
+  esac
+}
+
+try_fetch_service_latest_tag() {
+  local service="$1"
+  local repo_slug
   local payload
 
+  repo_slug="$(service_repo_slug "${service}")" || return 1
   if ! command -v curl >/dev/null 2>&1; then
     return 1
   fi
 
-  payload="$(curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/latest" 2>/dev/null || true)"
+  payload="$(curl -fsSL "https://api.github.com/repos/${repo_slug}/releases/latest" 2>/dev/null || true)"
   [[ -n "${payload}" ]] || return 1
   printf '%s\n' "${payload}" | sed -nE 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/p' | head -n1
 }
@@ -649,15 +691,25 @@ resolve_install_dir() {
   fi
 
   if [[ -f "${GLOBAL_CONFIG}" ]]; then
-    INSTALL_TAG="$(read_json_string "${GLOBAL_CONFIG}" "release_tag")"
     INSTALLED_SCRIPT_VERSION="$(read_json_string "${GLOBAL_CONFIG}" "script_version")"
+    LANCEDB_RELEASE_TAG="$(read_json_string "${GLOBAL_CONFIG}" "lancedb_release_tag")"
+    SQLITE_RELEASE_TAG="$(read_json_string "${GLOBAL_CONFIG}" "sqlite_release_tag")"
+    if [[ -z "${LANCEDB_RELEASE_TAG}" || -z "${SQLITE_RELEASE_TAG}" ]]; then
+      local legacy_release_tag
+      legacy_release_tag="$(read_json_string "${GLOBAL_CONFIG}" "release_tag")"
+      [[ -n "${LANCEDB_RELEASE_TAG}" ]] || LANCEDB_RELEASE_TAG="${legacy_release_tag}"
+      [[ -n "${SQLITE_RELEASE_TAG}" ]] || SQLITE_RELEASE_TAG="${legacy_release_tag}"
+    fi
     config_value="$(read_json_string "${GLOBAL_CONFIG}" "lancedb_root")"
     if [[ -n "${config_value}" ]]; then
       LANCEDB_ROOT="${config_value}"
     fi
-    config_value="$(read_json_string "${GLOBAL_CONFIG}" "duckdb_root")"
+    config_value="$(read_json_string "${GLOBAL_CONFIG}" "sqlite_root")"
+    if [[ -z "${config_value}" ]]; then
+      config_value="$(read_json_string "${GLOBAL_CONFIG}" "duckdb_root")"
+    fi
     if [[ -n "${config_value}" ]]; then
-      DUCKDB_ROOT="${config_value}"
+      SQLITE_ROOT="${config_value}"
     fi
     initialized_value="$(read_json_boolean "${GLOBAL_CONFIG}" "initialized")"
     if [[ "${initialized_value}" == "true" ]]; then
@@ -684,10 +736,11 @@ write_global_config() {
 {
   "language": "${LANG_CODE}",
   "install_dir": "${INSTALL_DIR}",
-  "release_tag": "${INSTALL_TAG}",
   "script_version": "${INSTALLED_SCRIPT_VERSION}",
+  "lancedb_release_tag": "${LANCEDB_RELEASE_TAG}",
+  "sqlite_release_tag": "${SQLITE_RELEASE_TAG}",
   "lancedb_root": "${LANCEDB_ROOT}",
-  "duckdb_root": "${DUCKDB_ROOT}",
+  "sqlite_root": "${SQLITE_ROOT}",
   "initialized": $( [[ "${INITIALIZED}" -eq 1 ]] && printf 'true' || printf 'false' )
 }
 EOF
@@ -776,16 +829,26 @@ ensure_service_manager_available() {
   esac
 }
 
-fetch_release_json() {
+fetch_service_release_json() {
+  local service="$1"
+  local requested_tag="${2:-}"
+  local repo_slug
+  local tag_to_load="${requested_tag}"
+
+  repo_slug="$(service_repo_slug "${service}")" || return 1
+  [[ -n "${tag_to_load}" ]] || tag_to_load="$(get_service_release_tag "${service}" || true)"
+
   ensure_command curl || return 1
-  if [[ -n "${INSTALL_TAG}" ]]; then
-    if LATEST_RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/tags/${INSTALL_TAG}" 2>/dev/null)"; then
-      return
+  if [[ -n "${tag_to_load}" ]]; then
+    if LATEST_RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/${repo_slug}/releases/tags/${tag_to_load}" 2>/dev/null)"; then
+      set_service_release_tag "${service}" "${tag_to_load}"
+      return 0
     fi
   fi
 
-  LATEST_RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/latest")" || return 1
-  INSTALL_TAG="$(printf '%s\n' "${LATEST_RELEASE_JSON}" | sed -nE 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
+  LATEST_RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/${repo_slug}/releases/latest")" || return 1
+  tag_to_load="$(printf '%s\n' "${LATEST_RELEASE_JSON}" | sed -nE 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
+  set_service_release_tag "${service}" "${tag_to_load}"
 }
 
 release_has_asset() {
@@ -864,11 +927,15 @@ download_service_binary() {
   local service="$1"
   local target="$2"
   local temp_dir="$3"
-  local archive_name="${service}-${INSTALL_TAG}-${target}.tar.gz"
+  local resolved_tag
+  local repo_url
+  resolved_tag="$(get_service_release_tag "${service}")"
+  repo_url="$(service_repo_url "${service}")" || return 1
+  local archive_name="${service}-${resolved_tag}-${target}.tar.gz"
   local checksum_name="${archive_name}.sha256"
   local archive_path="${temp_dir}/${archive_name}"
   local checksum_path="${temp_dir}/${checksum_name}"
-  local base_url="${REPO_URL}/releases/download/${INSTALL_TAG}"
+  local base_url="${repo_url}/releases/download/${resolved_tag}"
   local extract_dir="${temp_dir}/extract-${service}"
   local binary_path
   local example_path
@@ -904,7 +971,7 @@ ensure_service_binary_installed() {
     return
   fi
 
-  install_service_binary "${service}" "${INSTALL_TAG}"
+  install_service_binary "${service}" "$(get_service_release_tag "${service}" || true)"
 }
 
 install_service_binary() {
@@ -912,35 +979,33 @@ install_service_binary() {
   local target_tag="${2:-}"
   local target
   local temp_dir
-  local previous_install_tag="${INSTALL_TAG}"
-  local resolved_tag
+  local previous_install_tag=""
+  local resolved_tag=""
 
-  if [[ -n "${target_tag}" ]]; then
-    INSTALL_TAG="${target_tag}"
-  fi
+  previous_install_tag="$(get_service_release_tag "${service}" || true)"
 
-  fetch_release_json || {
-    INSTALL_TAG="${previous_install_tag}"
+  fetch_service_release_json "${service}" "${target_tag}" || {
+    set_service_release_tag "${service}" "${previous_install_tag}"
     return 1
   }
-  resolved_tag="${INSTALL_TAG}"
+  resolved_tag="$(get_service_release_tag "${service}" || true)"
   target="$(detect_target)" || {
     warn "Unsupported operating system or CPU architecture." "不支持当前操作系统或 CPU 架构。"
-    INSTALL_TAG="${previous_install_tag}"
+    set_service_release_tag "${service}" "${previous_install_tag}"
     return 1
   }
 
   temp_dir="$(mktemp -d)" || {
-    INSTALL_TAG="${previous_install_tag}"
+    set_service_release_tag "${service}" "${previous_install_tag}"
     return 1
   }
   if ! download_service_binary "${service}" "${target}" "${temp_dir}"; then
     rm -rf "${temp_dir}"
-    INSTALL_TAG="${previous_install_tag}"
+    set_service_release_tag "${service}" "${previous_install_tag}"
     return 1
   fi
   rm -rf "${temp_dir}"
-  INSTALL_TAG="${resolved_tag}"
+  set_service_release_tag "${service}" "${resolved_tag}"
   write_global_config
 }
 
@@ -972,7 +1037,7 @@ is_valid_service_name() {
 default_port() {
   case "$1" in
     vldb-lancedb) printf '%s' "${DEFAULT_LANCEDB_PORT}" ;;
-    *) printf '%s' "${DEFAULT_DUCKDB_PORT}" ;;
+    *) printf '%s' "${DEFAULT_SQLITE_PORT}" ;;
   esac
 }
 
@@ -984,12 +1049,12 @@ default_instance_data_path() {
   local service="$1"
   local instance="$2"
   local lancedb_root="${3:-${LANCEDB_ROOT}}"
-  local duckdb_root="${4:-${DUCKDB_ROOT}}"
+  local sqlite_root="${4:-${SQLITE_ROOT}}"
 
   if [[ "${service}" == "vldb-lancedb" ]]; then
     printf '%s' "${lancedb_root}/${instance}"
   else
-    printf '%s' "${duckdb_root}/${instance}/duckdb.db"
+    printf '%s' "${sqlite_root}/${instance}/sqlite.db"
   fi
 }
 
@@ -1015,13 +1080,13 @@ paths_overlap() {
 }
 
 list_config_files() {
-  find "${INSTALL_DIR}/config" -maxdepth 1 -type f \( -name "vldb-lancedb-*.json" -o -name "vldb-duckdb-*.json" \) 2>/dev/null | sort
+  find "${INSTALL_DIR}/config" -maxdepth 1 -type f \( -name "vldb-lancedb-*.json" -o -name "vldb-sqlite-*.json" \) 2>/dev/null | sort
 }
 
 service_display_name() {
   case "$1" in
     vldb-lancedb) printf '%s' "LanceDB" ;;
-    vldb-duckdb) printf '%s' "DuckDB" ;;
+    vldb-sqlite) printf '%s' "SQLite" ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -1063,9 +1128,9 @@ parse_instance_meta() {
       PARSED_SERVICE="vldb-lancedb"
       PARSED_INSTANCE="${basename#vldb-lancedb-}"
       ;;
-    vldb-duckdb-*)
-      PARSED_SERVICE="vldb-duckdb"
-      PARSED_INSTANCE="${basename#vldb-duckdb-}"
+    vldb-sqlite-*)
+      PARSED_SERVICE="vldb-sqlite"
+      PARSED_INSTANCE="${basename#vldb-sqlite-}"
       ;;
     *)
       PARSED_SERVICE=""
@@ -1130,13 +1195,87 @@ EOF
   "host": "${host}",
   "port": ${port},
   "db_path": "${data_path}",
-  "memory_limit": "2GB",
-  "threads": 4,
+  "connection_pool_size": $(sqlite_connection_pool_size_value "${config_path}"),
+  "busy_timeout_ms": $(sqlite_busy_timeout_ms_value "${config_path}"),
+$(sqlite_pragmas_json_block "${config_path}")
+$(sqlite_hardening_json_block "${config_path}")
   "service_name": "${service_name}",
 $(service_logging_json_block "${service}" "${config_path}")
 }
 EOF
   fi
+}
+
+sqlite_connection_pool_size_value() {
+  local config_path="$1"
+  local existing=""
+
+  if [[ -f "${config_path}" ]]; then
+    existing="$(read_json_number "${config_path}" "connection_pool_size")"
+  fi
+
+  printf '%s' "${existing:-8}"
+}
+
+sqlite_busy_timeout_ms_value() {
+  local config_path="$1"
+  local existing=""
+
+  if [[ -f "${config_path}" ]]; then
+    existing="$(read_json_number "${config_path}" "busy_timeout_ms")"
+  fi
+
+  printf '%s' "${existing:-5000}"
+}
+
+sqlite_pragmas_json_block() {
+  local config_path="$1"
+  local existing=""
+
+  if [[ -f "${config_path}" ]]; then
+    existing="$(extract_json_object_block "${config_path}" "pragmas" || true)"
+  fi
+
+  if [[ -n "${existing}" ]]; then
+    printf '%s\n' "${existing}" | sed '$s/$/,/'
+    return 0
+  fi
+
+  cat <<'EOF'
+  "pragmas": {
+    "journal_mode": "WAL",
+    "synchronous": "NORMAL",
+    "foreign_keys": true,
+    "temp_store": "MEMORY",
+    "wal_autocheckpoint_pages": 1000,
+    "cache_size_kib": 65536,
+    "mmap_size_bytes": 268435456
+  },
+EOF
+}
+
+sqlite_hardening_json_block() {
+  local config_path="$1"
+  local existing=""
+
+  if [[ -f "${config_path}" ]]; then
+    existing="$(extract_json_object_block "${config_path}" "hardening" || true)"
+  fi
+
+  if [[ -n "${existing}" ]]; then
+    printf '%s\n' "${existing}" | sed '$s/$/,/'
+    return 0
+  fi
+
+  cat <<'EOF'
+  "hardening": {
+    "enforce_db_file_lock": true,
+    "read_only": false,
+    "allow_uri_filenames": false,
+    "trusted_schema": false,
+    "defensive": true
+  },
+EOF
 }
 
 service_logging_json_block() {
@@ -1180,7 +1319,7 @@ EOF
     "slow_query_full_sql_enabled": true,
     "sql_preview_chars": 160,
     "log_dir": "",
-    "log_file_name": "vldb-duckdb.log"
+    "log_file_name": "vldb-sqlite.log"
   }
 EOF
   fi
@@ -1776,12 +1915,12 @@ restart_registered_service_if_running() {
 }
 
 choose_data_roots() {
-  local lance_root duck_root
-  local default_lance default_duck
-  local default_lance_path default_duck_path
+  local lance_root sqlite_root
+  local default_lance default_sqlite
+  local default_lance_path default_sqlite_path
 
   default_lance="${LANCEDB_ROOT:-${GLOBAL_HOME}/lancedb}"
-  default_duck="${DUCKDB_ROOT:-${GLOBAL_HOME}/duckdb}"
+  default_sqlite="${SQLITE_ROOT:-${GLOBAL_HOME}/sqlite}"
 
   while true; do
     lance_root="$(prompt_config_value "LanceDB data root" "LanceDB 数据根目录" "${default_lance}")"
@@ -1802,42 +1941,42 @@ choose_data_roots() {
       continue
     fi
 
-    duck_root="$(prompt_config_value "DuckDB data root" "DuckDB 数据根目录" "${default_duck}")"
-    if ! is_safe_absolute_path "${duck_root}"; then
-      info "Invalid DuckDB data root." "DuckDB 数据根目录不合法。"
+    sqlite_root="$(prompt_config_value "SQLite data root" "SQLite 数据根目录" "${default_sqlite}")"
+    if ! is_safe_absolute_path "${sqlite_root}"; then
+      info "Invalid SQLite data root." "SQLite 数据根目录不合法。"
       continue
     fi
-    duck_root="$(resolve_normalized_path "${duck_root}")" || {
-      info "Invalid DuckDB data root." "DuckDB 数据根目录不合法。"
+    sqlite_root="$(resolve_normalized_path "${sqlite_root}")" || {
+      info "Invalid SQLite data root." "SQLite 数据根目录不合法。"
       continue
     }
-    if [[ -e "${duck_root}" && ! -d "${duck_root}" ]]; then
-      info "DuckDB data root already exists and is not a directory." "DuckDB 数据根目录已存在且不是目录。"
+    if [[ -e "${sqlite_root}" && ! -d "${sqlite_root}" ]]; then
+      info "SQLite data root already exists and is not a directory." "SQLite 数据根目录已存在且不是目录。"
       continue
     fi
-    if paths_overlap "${INSTALL_DIR}" "${duck_root}"; then
-      info "DuckDB data root must stay outside the installation directory." "DuckDB 数据根目录必须位于安装目录之外。"
+    if paths_overlap "${INSTALL_DIR}" "${sqlite_root}"; then
+      info "SQLite data root must stay outside the installation directory." "SQLite 数据根目录必须位于安装目录之外。"
       continue
     fi
-    if paths_overlap "${lance_root}" "${duck_root}"; then
-      info "LanceDB and DuckDB data roots must not overlap." "LanceDB 和 DuckDB 数据根目录不能重叠。"
+    if paths_overlap "${lance_root}" "${sqlite_root}"; then
+      info "LanceDB and SQLite data roots must not overlap." "LanceDB 和 SQLite 数据根目录不能重叠。"
       continue
     fi
 
-    default_lance_path="$(default_instance_data_path "vldb-lancedb" "default" "${lance_root}" "${duck_root}")"
-    default_duck_path="$(default_instance_data_path "vldb-duckdb" "default" "${lance_root}" "${duck_root}")"
+    default_lance_path="$(default_instance_data_path "vldb-lancedb" "default" "${lance_root}" "${sqlite_root}")"
+    default_sqlite_path="$(default_instance_data_path "vldb-sqlite" "default" "${lance_root}" "${sqlite_root}")"
     validate_data_path "${default_lance_path}" "vldb-lancedb" "default" >/dev/null || {
       info "LanceDB default data path conflicts with an existing instance." "LanceDB 默认数据路径与已有实例冲突。"
       continue
     }
-    validate_data_path "${default_duck_path}" "vldb-duckdb" "default" >/dev/null || {
-      info "DuckDB default data path conflicts with an existing instance." "DuckDB 默认数据路径与已有实例冲突。"
+    validate_data_path "${default_sqlite_path}" "vldb-sqlite" "default" >/dev/null || {
+      info "SQLite default data path conflicts with an existing instance." "SQLite 默认数据路径与已有实例冲突。"
       continue
     }
 
     LANCEDB_ROOT="${lance_root%/}"
-    DUCKDB_ROOT="${duck_root%/}"
-    mkdir -p "${LANCEDB_ROOT}" "${DUCKDB_ROOT}"
+    SQLITE_ROOT="${sqlite_root%/}"
+    mkdir -p "${LANCEDB_ROOT}" "${SQLITE_ROOT}"
     return 0
   done
 }
@@ -1908,12 +2047,12 @@ choose_service() {
   write_box_line "$(say "0. Back" "0. 返回")"
   show_menu_separator
   write_box_line "$(say "1. LanceDB" "1. LanceDB")"
-  write_box_line "$(say "2. DuckDB" "2. DuckDB")"
+  write_box_line "$(say "2. SQLite" "2. SQLite")"
   while true; do
     read_prompt_value "$(say "Choice [1/2/0]: " "输入 [1/2/0]：")" answer
     case "${answer}" in
       1) printf '%s' "vldb-lancedb"; return ;;
-      2) printf '%s' "vldb-duckdb"; return ;;
+      2) printf '%s' "vldb-sqlite"; return ;;
       0) return 1 ;;
       *) terminal_line "$(say "Please input 1, 2, or 0." "请输入 1、2 或 0。")" ;;
     esac
@@ -1979,12 +2118,15 @@ switch_language() {
 
 check_updates() {
   local remote_script_version=""
+  local installed_kinds=""
+  local service=""
+  local installed_tag=""
   local latest_tag=""
+  local update_candidates=""
   local cmp
 
   info "Checking for updates..." "正在检查更新……"
   remote_script_version="$(try_fetch_remote_script_version "vldb" || true)"
-  latest_tag="$(try_fetch_latest_tag || true)"
 
   line "Current manager script version: ${SCRIPT_VERSION}" "当前管理脚本版本：${SCRIPT_VERSION}"
   if [[ -n "${remote_script_version}" ]]; then
@@ -2002,29 +2144,45 @@ check_updates() {
     line "Latest manager script version: unavailable" "无法获取最新管理脚本版本"
   fi
 
-  if [[ -n "${INSTALL_TAG}" ]]; then
-    line "Installed release tag: ${INSTALL_TAG}" "当前已安装的 release 标签：${INSTALL_TAG}"
-  else
-    line "Installed release tag: not set" "当前尚未记录 release 标签"
+  installed_kinds="$(get_installed_service_kinds)"
+  if [[ -z "${installed_kinds}" ]]; then
+    line "No application binaries are installed yet." "当前还没有安装应用二进制文件。"
+    return 0
   fi
 
-  if [[ -n "${latest_tag}" ]]; then
-    line "Latest release tag: ${latest_tag}" "最新 release 标签：${latest_tag}"
-    if [[ -z "${INSTALL_TAG}" ]]; then
-      line "No release tag is stored locally yet." "本地尚未记录 release 标签。"
+  while IFS= read -r service; do
+    [[ -n "${service}" ]] || continue
+    installed_tag="$(get_service_release_tag "${service}" || true)"
+    latest_tag="$(try_fetch_service_latest_tag "${service}" || true)"
+
+    if [[ -n "${installed_tag}" ]]; then
+      line "Installed $(service_display_name "${service}") release tag: ${installed_tag}" "当前已安装的 $(service_display_name "${service}") release 标签：${installed_tag}"
     else
-      cmp="$(version_compare "${latest_tag}" "${INSTALL_TAG}")"
-      if [[ "${cmp}" == "1" ]]; then
-        info "A newer binary release is available." "发现更新的二进制 release。"
-        if confirm_yes_no "Update application binaries now?" "现在更新应用二进制文件？" "Y"; then
-          update_applications_to_tag "${latest_tag}" || return 1
-        fi
+      line "Installed $(service_display_name "${service}") release tag: not set" "当前尚未记录 $(service_display_name "${service}") release 标签"
+    fi
+
+    if [[ -n "${latest_tag}" ]]; then
+      line "Latest $(service_display_name "${service}") release tag: ${latest_tag}" "最新 $(service_display_name "${service}") release 标签：${latest_tag}"
+      if [[ -z "${installed_tag}" ]]; then
+        update_candidates+="${service}"$'\n'
       else
-        line "Binary release is up to date." "二进制 release 已是最新。"
+        cmp="$(version_compare "${latest_tag}" "${installed_tag}")"
+        if [[ "${cmp}" == "1" ]]; then
+          update_candidates+="${service}"$'\n'
+        fi
       fi
+    else
+      line "Latest $(service_display_name "${service}") release tag: unavailable" "无法获取最新 $(service_display_name "${service}") release 标签"
+    fi
+  done <<< "${installed_kinds}"
+
+  if [[ -n "${update_candidates}" ]]; then
+    info "A newer binary release is available." "发现更新的二进制 release。"
+    if confirm_yes_no "Update application binaries now?" "现在更新应用二进制文件？" "Y"; then
+      update_applications_to_latest "${update_candidates}" || return 1
     fi
   else
-    line "Latest release tag: unavailable" "无法获取最新 release 标签"
+    line "Binary releases are up to date." "二进制 release 已是最新。"
   fi
 }
 
@@ -2210,12 +2368,11 @@ prompt_config_value() {
 initialize_installation() {
   local host
   local lancedb_port
-  local duckdb_port
+  local sqlite_port
   local lancedb_service_name
-  local duckdb_service_name
+  local sqlite_service_name
 
   step "Running initial one-click installation" "正在执行首次一键安装"
-  fetch_release_json
   choose_data_roots
   ensure_service_manager_available || return 1
 
@@ -2226,26 +2383,26 @@ initialize_installation() {
 
   lancedb_port="$(prompt_for_port "LanceDB port" "LanceDB 端口" "$(default_port "vldb-lancedb")" "vldb-lancedb" "default")"
   while true; do
-    duckdb_port="$(prompt_for_port "DuckDB port" "DuckDB 端口" "$(default_port "vldb-duckdb")" "vldb-duckdb" "default")"
-    if [[ "${duckdb_port}" != "${lancedb_port}" ]]; then
+    sqlite_port="$(prompt_for_port "SQLite port" "SQLite 端口" "$(default_port "vldb-sqlite")" "vldb-sqlite" "default")"
+    if [[ "${sqlite_port}" != "${lancedb_port}" ]]; then
       break
     fi
-    info "LanceDB and DuckDB must use different ports." "LanceDB 和 DuckDB 必须使用不同端口。"
+    info "LanceDB and SQLite must use different ports." "LanceDB 和 SQLite 必须使用不同端口。"
   done
 
   lancedb_service_name="$(prompt_for_service_name "vldb-lancedb" "default" "$(new_unique_service_name "vldb-lancedb" "default")")"
-  duckdb_service_name="$(prompt_for_service_name "vldb-duckdb" "default" "$(new_unique_service_name "vldb-duckdb" "default")")"
-  while [[ "$(to_lower "${lancedb_service_name}")" == "$(to_lower "${duckdb_service_name}")" ]]; do
+  sqlite_service_name="$(prompt_for_service_name "vldb-sqlite" "default" "$(new_unique_service_name "vldb-sqlite" "default")")"
+  while [[ "$(to_lower "${lancedb_service_name}")" == "$(to_lower "${sqlite_service_name}")" ]]; do
     info "The two default instances must not share the same service name." "两个默认实例不能使用相同的服务名。"
-    duckdb_service_name="$(prompt_for_service_name "vldb-duckdb" "default" "$(new_unique_service_name "vldb-duckdb" "default" "${duckdb_service_name}")" "${duckdb_service_name}")"
+    sqlite_service_name="$(prompt_for_service_name "vldb-sqlite" "default" "$(new_unique_service_name "vldb-sqlite" "default" "${sqlite_service_name}")" "${sqlite_service_name}")"
   done
 
-  install_service_binary "vldb-lancedb" "${INSTALL_TAG}" || return 1
-  install_service_binary "vldb-duckdb" "${INSTALL_TAG}" || return 1
+  install_service_binary "vldb-lancedb" || return 1
+  install_service_binary "vldb-sqlite" || return 1
   write_service_config "vldb-lancedb" "default" "${host}" "${lancedb_port}" "$(default_instance_data_path "vldb-lancedb" "default")" "${lancedb_service_name}" || return 1
-  write_service_config "vldb-duckdb" "default" "${host}" "${duckdb_port}" "$(default_instance_data_path "vldb-duckdb" "default")" "${duckdb_service_name}" || return 1
+  write_service_config "vldb-sqlite" "default" "${host}" "${sqlite_port}" "$(default_instance_data_path "vldb-sqlite" "default")" "${sqlite_service_name}" || return 1
   register_instance "vldb-lancedb" "default" || return 1
-  register_instance "vldb-duckdb" "default" || return 1
+  register_instance "vldb-sqlite" "default" || return 1
 
   INITIALIZED=1
   INSTALLED_SCRIPT_VERSION="${SCRIPT_VERSION}"
@@ -2458,7 +2615,7 @@ get_installed_service_kinds() {
       printf '%s\n' "${PARSED_SERVICE}"
     done < <(list_config_files)
 
-    for service in vldb-lancedb vldb-duckdb; do
+    for service in vldb-lancedb vldb-sqlite; do
       if [[ -x "${INSTALL_DIR}/bin/${service}" ]]; then
         printf '%s\n' "${service}"
       fi
@@ -2466,8 +2623,8 @@ get_installed_service_kinds() {
   } | sed '/^$/d' | sort -u
 }
 
-update_applications_to_tag() {
-  local target_tag="$1"
+update_applications_to_latest() {
+  local service_list="${1:-}"
   local installed_kinds
   local file
   local filename
@@ -2476,7 +2633,11 @@ update_applications_to_tag() {
   local service
   local failed=0
 
-  installed_kinds="$(get_installed_service_kinds)"
+  if [[ -n "${service_list}" ]]; then
+    installed_kinds="${service_list}"
+  else
+    installed_kinds="$(get_installed_service_kinds)"
+  fi
   if [[ -z "${installed_kinds}" ]]; then
     info "No application binaries are installed yet." "当前还没有安装应用二进制文件。"
     return 0
@@ -2496,7 +2657,7 @@ update_applications_to_tag() {
   else
     while IFS= read -r service; do
       [[ -n "${service}" ]] || continue
-      if ! install_service_binary "${service}" "${target_tag}"; then
+      if ! install_service_binary "${service}"; then
         failed=1
         break
       fi
@@ -2514,9 +2675,8 @@ update_applications_to_tag() {
     return 1
   fi
 
-  INSTALL_TAG="${target_tag}"
   write_global_config
-  info "Application binaries updated to ${target_tag}." "应用二进制文件已更新到 ${target_tag}。"
+  info "Application binaries were updated from their service repositories." "应用二进制文件已从各自服务仓库更新。"
 }
 
 list_profile_files() {

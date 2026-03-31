@@ -320,15 +320,27 @@ function Write-GlobalConfig {
     } else {
         Join-Path $script:GlobalHome "lancedb"
     }
-    $duckRoot = if ($existingConfig -and $existingConfig.duckdb_root) {
+    $sqliteRoot = if ($existingConfig -and $existingConfig.sqlite_root) {
+        [string]$existingConfig.sqlite_root
+    } elseif ($existingConfig -and $existingConfig.duckdb_root) {
         [string]$existingConfig.duckdb_root
     } else {
-        Join-Path $script:GlobalHome "duckdb"
+        Join-Path $script:GlobalHome "sqlite"
     }
-    $releaseTag = if ($existingConfig -and $existingConfig.release_tag) {
+    $legacyReleaseTag = if ($existingConfig -and $existingConfig.release_tag) {
         [string]$existingConfig.release_tag
     } else {
         $null
+    }
+    $lancedbReleaseTag = if ($existingConfig -and $existingConfig.lancedb_release_tag) {
+        [string]$existingConfig.lancedb_release_tag
+    } else {
+        $legacyReleaseTag
+    }
+    $sqliteReleaseTag = if ($existingConfig -and $existingConfig.sqlite_release_tag) {
+        [string]$existingConfig.sqlite_release_tag
+    } else {
+        $legacyReleaseTag
     }
     $initialized = $false
     if ($existingConfig -and $null -ne $existingConfig.initialized) {
@@ -339,10 +351,11 @@ function Write-GlobalConfig {
     @{
         language = if ($existingConfig -and $existingConfig.language) { [string]$existingConfig.language } else { "en" }
         install_dir = $script:InstallDir
-        release_tag = $releaseTag
         script_version = $script:ManagerScriptVersion
+        lancedb_release_tag = $lancedbReleaseTag
+        sqlite_release_tag = $sqliteReleaseTag
         lancedb_root = $lanceRoot
-        duckdb_root = $duckRoot
+        sqlite_root = $sqliteRoot
         initialized = $initialized
     } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $script:GlobalConfig
 }

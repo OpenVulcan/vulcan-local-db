@@ -5,20 +5,23 @@ param(
 $ErrorActionPreference = "Stop"
 
 $ScriptVersion = "0.1.25"
-$RepoSlug = "OpenVulcan/vulcan-local-db"
-$RepoUrl = "https://github.com/OpenVulcan/vulcan-local-db"
-$RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts"
+$ManagerRepoSlug = "OpenVulcan/vulcan-local-db"
+$RawBaseUrl = "https://raw.githubusercontent.com/$ManagerRepoSlug/main/scripts"
+$LanceDbRepoSlug = "OpenVulcan/vldb-lancedb"
+$LanceDbRepoUrl = "https://github.com/$LanceDbRepoSlug"
+$SqliteRepoSlug = "OpenVulcan/vldb-sqlite"
+$SqliteRepoUrl = "https://github.com/$SqliteRepoSlug"
 $GlobalHome = Join-Path $HOME ".vulcan\vldb"
 $GlobalConfig = Join-Path $GlobalHome "config.json"
 $RunDir = Join-Path $GlobalHome "run"
 $InstallDir = $null
-$ReleaseTag = $null
+$LanceDbReleaseTag = $null
+$SqliteReleaseTag = $null
 $InstalledScriptVersion = $ScriptVersion
 $Initialized = $false
 $LanceDbRoot = Join-Path $GlobalHome "lancedb"
-$DuckDbRoot = Join-Path $GlobalHome "duckdb"
+$SqliteRoot = Join-Path $GlobalHome "sqlite"
 $WinSWVersion = "v2.12.0"
-$LatestRelease = $null
 $ReleaseCache = @{}
 $BoxMinWidth = 18
 $BoxMaxWidth = 50
@@ -255,8 +258,16 @@ function Resolve-InstallDir {
         $script:InstallDir = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
     }
 
-    if ($config -and $config.release_tag) {
-        $script:ReleaseTag = [string]$config.release_tag
+    $legacyReleaseTag = if ($config -and $config.release_tag) { [string]$config.release_tag } else { $null }
+    if ($config -and $config.lancedb_release_tag) {
+        $script:LanceDbReleaseTag = [string]$config.lancedb_release_tag
+    } elseif ($legacyReleaseTag) {
+        $script:LanceDbReleaseTag = $legacyReleaseTag
+    }
+    if ($config -and $config.sqlite_release_tag) {
+        $script:SqliteReleaseTag = [string]$config.sqlite_release_tag
+    } elseif ($legacyReleaseTag) {
+        $script:SqliteReleaseTag = $legacyReleaseTag
     }
     if ($config -and $config.script_version) {
         $script:InstalledScriptVersion = [string]$config.script_version
@@ -264,8 +275,10 @@ function Resolve-InstallDir {
     if ($config -and $config.lancedb_root) {
         $script:LanceDbRoot = [string]$config.lancedb_root
     }
-    if ($config -and $config.duckdb_root) {
-        $script:DuckDbRoot = [string]$config.duckdb_root
+    if ($config -and $config.sqlite_root) {
+        $script:SqliteRoot = [string]$config.sqlite_root
+    } elseif ($config -and $config.duckdb_root) {
+        $script:SqliteRoot = [string]$config.duckdb_root
     }
     if ($config -and $null -ne $config.initialized) {
         $script:Initialized = [bool]$config.initialized
@@ -277,10 +290,11 @@ function Write-Config {
     @{
         language = "en"
         install_dir = $script:InstallDir
-        release_tag = $script:ReleaseTag
+        lancedb_release_tag = $script:LanceDbReleaseTag
+        sqlite_release_tag = $script:SqliteReleaseTag
         script_version = $script:InstalledScriptVersion
         lancedb_root = $script:LanceDbRoot
-        duckdb_root = $script:DuckDbRoot
+        sqlite_root = $script:SqliteRoot
         initialized = $script:Initialized
     } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $script:GlobalConfig
 }
@@ -358,7 +372,7 @@ function Get-DefaultDataRoot {
         return (Join-Path $script:GlobalHome "lancedb")
     }
 
-    return (Join-Path $script:GlobalHome "duckdb")
+    return (Join-Path $script:GlobalHome "sqlite")
 }
 
 function Get-DefaultPort {
@@ -368,7 +382,7 @@ function Get-DefaultPort {
         return 19301
     }
 
-    return 19401
+    return 19501
 }
 
 function Get-LegacyServiceName {
@@ -381,14 +395,14 @@ function Get-DefaultInstanceDataPath {
         [string]$Service,
         [string]$Instance,
         [string]$LanceRoot = $script:LanceDbRoot,
-        [string]$DuckRoot = $script:DuckDbRoot
+        [string]$SqliteRoot = $script:SqliteRoot
     )
 
     if ($Service -eq "vldb-lancedb") {
         return (Join-Path $LanceRoot $Instance)
     }
 
-    return (Join-Path (Join-Path $DuckRoot $Instance) "duckdb.db")
+    return (Join-Path (Join-Path $SqliteRoot $Instance) "sqlite.db")
 }
 
 function Resolve-NormalizedPath {
@@ -465,7 +479,7 @@ function Get-InstanceFiles {
     if (-not (Test-Path $configDir)) { return @() }
 
     return Get-ChildItem -Path $configDir -File | Where-Object {
-        $_.Name -like "vldb-lancedb-*.json" -or $_.Name -like "vldb-duckdb-*.json"
+        $_.Name -like "vldb-lancedb-*.json" -or $_.Name -like "vldb-sqlite-*.json"
     } | Sort-Object Name
 }
 
@@ -794,13 +808,13 @@ function Choose-Service {
     Write-BoxLine -Message "0. Back"
     Write-MenuSeparator
     Write-BoxLine -Message "1. LanceDB"
-    Write-BoxLine -Message "2. DuckDB"
+    Write-BoxLine -Message "2. SQLite"
     Write-BoxBorder
     while ($true) {
         $choice = Read-Host "Choose service [1/2/0]"
         switch ($choice) {
             "1" { return "vldb-lancedb" }
-            "2" { return "vldb-duckdb" }
+            "2" { return "vldb-sqlite" }
             "0" { return $null }
             default { Write-Info "Please input 1, 2, or 0." }
         }
@@ -861,26 +875,90 @@ function Get-RemoteScriptVersion {
     return $null
 }
 
+function Get-ServiceRepoSlug {
+    param([string]$Service)
+
+    if ($Service -eq "vldb-lancedb") {
+        return $script:LanceDbRepoSlug
+    }
+    if ($Service -eq "vldb-sqlite") {
+        return $script:SqliteRepoSlug
+    }
+
+    throw "Unknown service '$Service'."
+}
+
+function Get-ServiceRepoUrl {
+    param([string]$Service)
+
+    if ($Service -eq "vldb-lancedb") {
+        return $script:LanceDbRepoUrl
+    }
+    if ($Service -eq "vldb-sqlite") {
+        return $script:SqliteRepoUrl
+    }
+
+    throw "Unknown service '$Service'."
+}
+
+function Get-ServiceReleaseTag {
+    param([string]$Service)
+
+    if ($Service -eq "vldb-lancedb") {
+        return $script:LanceDbReleaseTag
+    }
+    if ($Service -eq "vldb-sqlite") {
+        return $script:SqliteReleaseTag
+    }
+
+    throw "Unknown service '$Service'."
+}
+
+function Set-ServiceReleaseTag {
+    param(
+        [string]$Service,
+        [string]$Tag
+    )
+
+    if ($Service -eq "vldb-lancedb") {
+        $script:LanceDbReleaseTag = $Tag
+        return
+    }
+    if ($Service -eq "vldb-sqlite") {
+        $script:SqliteReleaseTag = $Tag
+        return
+    }
+
+    throw "Unknown service '$Service'."
+}
+
 function Try-GetLatestReleaseTag {
+    param([string]$Service)
+
+    $repoSlug = Get-ServiceRepoSlug -Service $Service
     try {
-        return (Invoke-RestMethod -Uri "https://api.github.com/repos/$RepoSlug/releases/latest").tag_name
+        return (Invoke-RestMethod -Uri "https://api.github.com/repos/$repoSlug/releases/latest").tag_name
     } catch {
         return $null
     }
 }
 
 function Get-ReleaseByTag {
-    param([string]$Tag)
+    param(
+        [string]$Service,
+        [string]$Tag
+    )
 
-    $cacheKey = if ([string]::IsNullOrWhiteSpace($Tag)) { "__latest__" } else { $Tag }
+    $repoSlug = Get-ServiceRepoSlug -Service $Service
+    $cacheKey = if ([string]::IsNullOrWhiteSpace($Tag)) { "$Service|__latest__" } else { "$Service|$Tag" }
     if ($script:ReleaseCache.ContainsKey($cacheKey)) {
         return $script:ReleaseCache[$cacheKey]
     }
 
     $uri = if ([string]::IsNullOrWhiteSpace($Tag)) {
-        "https://api.github.com/repos/$RepoSlug/releases/latest"
+        "https://api.github.com/repos/$repoSlug/releases/latest"
     } else {
-        "https://api.github.com/repos/$RepoSlug/releases/tags/$Tag"
+        "https://api.github.com/repos/$repoSlug/releases/tags/$Tag"
     }
 
     try {
@@ -901,16 +979,14 @@ function Get-ReleaseByTag {
         throw "Unable to resolve release metadata for tag '$Tag'."
     }
 
-    if ([string]::IsNullOrWhiteSpace($Tag)) {
-        $script:LatestRelease = $release
-    }
-
     $script:ReleaseCache[$cacheKey] = $release
     return $release
 }
 
 function Get-LatestRelease {
-    return (Get-ReleaseByTag -Tag $null)
+    param([string]$Service)
+
+    return (Get-ReleaseByTag -Service $Service -Tag $null)
 }
 
 function Download-FileWithProgress {
@@ -940,13 +1016,14 @@ function Download-ServiceArchive {
         [string]$Target,
         [string]$TempDir,
         [object]$Release
-    )
+)
 
+    $repoUrl = Get-ServiceRepoUrl -Service $Service
     $archiveName = "$Service-$Tag-$Target.zip"
     $checksumName = "$archiveName.sha256"
     $archivePath = Join-Path $TempDir $archiveName
     $checksumPath = Join-Path $TempDir $checksumName
-    $baseUrl = "$RepoUrl/releases/download/$Tag"
+    $baseUrl = "$repoUrl/releases/download/$Tag"
 
     if ($Release.assets.name -notcontains $archiveName) {
         throw "The current release does not provide $archiveName."
@@ -996,7 +1073,8 @@ function Install-ServiceBinary {
         [string]$Tag
     )
 
-    $release = if ($Tag) { Get-ReleaseByTag -Tag $Tag } else { Get-LatestRelease }
+    $previousTag = Get-ServiceReleaseTag -Service $Service
+    $release = if ($Tag) { Get-ReleaseByTag -Service $Service -Tag $Tag } else { Get-LatestRelease -Service $Service }
     $target = Get-TargetTriple
     $resolvedTag = [string]$release.tag_name
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("vulcanlocaldb-" + [guid]::NewGuid().ToString("N"))
@@ -1005,8 +1083,13 @@ function Install-ServiceBinary {
     try {
         $archivePath = Download-ServiceArchive -Service $Service -Tag $resolvedTag -Target $target -TempDir $tempDir -Release $release
         Install-ServiceBinaryFromArchive -ArchivePath $archivePath -Service $Service -TempDir $tempDir
+        Set-ServiceReleaseTag -Service $Service -Tag $resolvedTag
+        Write-Config
     } finally {
         Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
+        if (-not (Test-Path (Join-Path $script:InstallDir "bin\$Service.exe"))) {
+            Set-ServiceReleaseTag -Service $Service -Tag $previousTag
+        }
     }
 }
 
@@ -1018,10 +1101,7 @@ function Ensure-ServiceBinaryInstalled {
         return
     }
 
-    $release = if ($script:ReleaseTag) { Get-ReleaseByTag -Tag $script:ReleaseTag } else { Get-LatestRelease }
-    $script:ReleaseTag = [string]$release.tag_name
-    Install-ServiceBinary -Service $Service -Tag $script:ReleaseTag
-    Write-Config
+    Install-ServiceBinary -Service $Service -Tag (Get-ServiceReleaseTag -Service $Service)
 }
 
 function Get-InstalledServiceKinds {
@@ -1032,7 +1112,7 @@ function Get-InstalledServiceKinds {
         [void]$services.Add($meta.service)
     }
 
-    foreach ($service in @("vldb-lancedb", "vldb-duckdb")) {
+    foreach ($service in @("vldb-lancedb", "vldb-sqlite")) {
         if (Test-Path (Join-Path $script:InstallDir "bin\$service.exe")) {
             [void]$services.Add($service)
         }
@@ -1293,7 +1373,29 @@ function Get-DefaultLoggingConfig {
         slow_query_full_sql_enabled = $true
         sql_preview_chars = 160
         log_dir = ""
-        log_file_name = "vldb-duckdb.log"
+        log_file_name = "vldb-sqlite.log"
+    }
+}
+
+function Get-DefaultSqlitePragmas {
+    return [ordered]@{
+        journal_mode = "WAL"
+        synchronous = "NORMAL"
+        foreign_keys = $true
+        temp_store = "MEMORY"
+        wal_autocheckpoint_pages = 1000
+        cache_size_kib = 65536
+        mmap_size_bytes = 268435456
+    }
+}
+
+function Get-DefaultSqliteHardening {
+    return [ordered]@{
+        enforce_db_file_lock = $true
+        read_only = $false
+        allow_uri_filenames = $false
+        trusted_schema = $false
+        defensive = $true
     }
 }
 
@@ -1337,12 +1439,34 @@ function Write-ServiceConfig {
     } else {
         $dataDir = Split-Path -Parent $DataPath
         New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+        $connectionPoolSize = if ($existingConfig -and $existingConfig.PSObject.Properties.Name -contains "connection_pool_size" -and $null -ne $existingConfig.connection_pool_size) {
+            [int]$existingConfig.connection_pool_size
+        } else {
+            8
+        }
+        $busyTimeoutMs = if ($existingConfig -and $existingConfig.PSObject.Properties.Name -contains "busy_timeout_ms" -and $null -ne $existingConfig.busy_timeout_ms) {
+            [int]$existingConfig.busy_timeout_ms
+        } else {
+            5000
+        }
+        $pragmas = if ($existingConfig -and $existingConfig.PSObject.Properties.Name -contains "pragmas" -and $existingConfig.pragmas) {
+            $existingConfig.pragmas
+        } else {
+            Get-DefaultSqlitePragmas
+        }
+        $hardening = if ($existingConfig -and $existingConfig.PSObject.Properties.Name -contains "hardening" -and $existingConfig.hardening) {
+            $existingConfig.hardening
+        } else {
+            Get-DefaultSqliteHardening
+        }
         [ordered]@{
             host = $BindHost
             port = $Port
             db_path = $DataPath
-            memory_limit = "2GB"
-            threads = 4
+            connection_pool_size = $connectionPoolSize
+            busy_timeout_ms = $busyTimeoutMs
+            pragmas = $pragmas
+            hardening = $hardening
             service_name = $ServiceName
             logging = $logging
         } | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 $configPath
@@ -1370,7 +1494,7 @@ function Show-Instances {
 
 function Choose-DataRoots {
     $defaultLanceRoot = Get-DefaultDataRoot "vldb-lancedb"
-    $defaultDuckRoot = Get-DefaultDataRoot "vldb-duckdb"
+    $defaultSqliteRoot = Get-DefaultDataRoot "vldb-sqlite"
 
     while ($true) {
         $lanceRoot = Read-Default "LanceDB data root" $defaultLanceRoot
@@ -1387,26 +1511,26 @@ function Choose-DataRoots {
             continue
         }
 
-        $duckRoot = Read-Default "DuckDB data root" $defaultDuckRoot
-        if (-not [System.IO.Path]::IsPathRooted($duckRoot)) {
-            Write-Info "Invalid DuckDB data root."
+        $sqliteRoot = Read-Default "SQLite data root" $defaultSqliteRoot
+        if (-not [System.IO.Path]::IsPathRooted($sqliteRoot)) {
+            Write-Info "Invalid SQLite data root."
             continue
         }
-        if (Test-PathsOverlap $script:InstallDir $duckRoot) {
-            Write-Info "DuckDB data root must stay outside the installation directory."
+        if (Test-PathsOverlap $script:InstallDir $sqliteRoot) {
+            Write-Info "SQLite data root must stay outside the installation directory."
             continue
         }
-        if ((Test-Path $duckRoot) -and -not (Test-Path $duckRoot -PathType Container)) {
-            Write-Info "DuckDB data root already exists and is not a directory."
+        if ((Test-Path $sqliteRoot) -and -not (Test-Path $sqliteRoot -PathType Container)) {
+            Write-Info "SQLite data root already exists and is not a directory."
             continue
         }
-        if (Test-PathsOverlap $lanceRoot $duckRoot) {
-            Write-Info "LanceDB and DuckDB data roots must not overlap."
+        if (Test-PathsOverlap $lanceRoot $sqliteRoot) {
+            Write-Info "LanceDB and SQLite data roots must not overlap."
             continue
         }
 
-        $defaultLancePath = Get-DefaultInstanceDataPath -Service "vldb-lancedb" -Instance "default" -LanceRoot $lanceRoot -DuckRoot $duckRoot
-        $defaultDuckPath = Get-DefaultInstanceDataPath -Service "vldb-duckdb" -Instance "default" -LanceRoot $lanceRoot -DuckRoot $duckRoot
+        $defaultLancePath = Get-DefaultInstanceDataPath -Service "vldb-lancedb" -Instance "default" -LanceRoot $lanceRoot -SqliteRoot $sqliteRoot
+        $defaultSqlitePath = Get-DefaultInstanceDataPath -Service "vldb-sqlite" -Instance "default" -LanceRoot $lanceRoot -SqliteRoot $sqliteRoot
 
         $lanceError = Get-DataPathValidationError -CandidatePath $defaultLancePath -Service "vldb-lancedb" -Instance "default"
         if ($lanceError) {
@@ -1414,15 +1538,15 @@ function Choose-DataRoots {
             continue
         }
 
-        $duckError = Get-DataPathValidationError -CandidatePath $defaultDuckPath -Service "vldb-duckdb" -Instance "default"
-        if ($duckError) {
-            Write-Info $duckError
+        $sqliteError = Get-DataPathValidationError -CandidatePath $defaultSqlitePath -Service "vldb-sqlite" -Instance "default"
+        if ($sqliteError) {
+            Write-Info $sqliteError
             continue
         }
 
         $script:LanceDbRoot = Resolve-NormalizedPath $lanceRoot
-        $script:DuckDbRoot = Resolve-NormalizedPath $duckRoot
-        New-Item -ItemType Directory -Force -Path $script:LanceDbRoot, $script:DuckDbRoot | Out-Null
+        $script:SqliteRoot = Resolve-NormalizedPath $sqliteRoot
+        New-Item -ItemType Directory -Force -Path $script:LanceDbRoot, $script:SqliteRoot | Out-Null
         return
     }
 }
@@ -1487,9 +1611,6 @@ function Prompt-ForServiceName {
 function Initialize-Installation {
     Write-Step "Running initial one-click installation"
 
-    $release = Get-LatestRelease
-    $script:ReleaseTag = [string]$release.tag_name
-
     Choose-DataRoots
     Ensure-ServiceBuilderInstalled | Out-Null
 
@@ -1497,28 +1618,28 @@ function Initialize-Installation {
 
     $lancePort = Prompt-ForPort -PromptText "LanceDB port" -DefaultPort (Get-DefaultPort "vldb-lancedb") -Service "vldb-lancedb" -Instance "default"
     while ($true) {
-        $duckPort = Prompt-ForPort -PromptText "DuckDB port" -DefaultPort (Get-DefaultPort "vldb-duckdb") -Service "vldb-duckdb" -Instance "default"
-        if ($duckPort -ne $lancePort) {
+        $sqlitePort = Prompt-ForPort -PromptText "SQLite port" -DefaultPort (Get-DefaultPort "vldb-sqlite") -Service "vldb-sqlite" -Instance "default"
+        if ($sqlitePort -ne $lancePort) {
             break
         }
-        Write-Info "LanceDB and DuckDB must use different ports."
+        Write-Info "LanceDB and SQLite must use different ports."
     }
 
     $lanceServiceName = Prompt-ForServiceName -Service "vldb-lancedb" -Instance "default" -DefaultName (New-UniqueServiceName -Service "vldb-lancedb" -Instance "default")
-    $duckServiceName = Prompt-ForServiceName -Service "vldb-duckdb" -Instance "default" -DefaultName (New-UniqueServiceName -Service "vldb-duckdb" -Instance "default")
-    while ([string]::Equals($lanceServiceName, $duckServiceName, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $sqliteServiceName = Prompt-ForServiceName -Service "vldb-sqlite" -Instance "default" -DefaultName (New-UniqueServiceName -Service "vldb-sqlite" -Instance "default")
+    while ([string]::Equals($lanceServiceName, $sqliteServiceName, [System.StringComparison]::OrdinalIgnoreCase)) {
         Write-Info "The two default services must not share the same service name."
-        $duckServiceName = Prompt-ForServiceName -Service "vldb-duckdb" -Instance "default" -DefaultName (New-UniqueServiceName -Service "vldb-duckdb" -Instance "default" -CurrentName $duckServiceName)
+        $sqliteServiceName = Prompt-ForServiceName -Service "vldb-sqlite" -Instance "default" -DefaultName (New-UniqueServiceName -Service "vldb-sqlite" -Instance "default" -CurrentName $sqliteServiceName)
     }
 
-    Install-ServiceBinary -Service "vldb-lancedb" -Tag $script:ReleaseTag
-    Install-ServiceBinary -Service "vldb-duckdb" -Tag $script:ReleaseTag
+    Install-ServiceBinary -Service "vldb-lancedb"
+    Install-ServiceBinary -Service "vldb-sqlite"
 
     Write-ServiceConfig -Service "vldb-lancedb" -Instance "default" -BindHost $bindHost -Port $lancePort -DataPath (Get-DefaultInstanceDataPath -Service "vldb-lancedb" -Instance "default") -ServiceName $lanceServiceName
-    Write-ServiceConfig -Service "vldb-duckdb" -Instance "default" -BindHost $bindHost -Port $duckPort -DataPath (Get-DefaultInstanceDataPath -Service "vldb-duckdb" -Instance "default") -ServiceName $duckServiceName
+    Write-ServiceConfig -Service "vldb-sqlite" -Instance "default" -BindHost $bindHost -Port $sqlitePort -DataPath (Get-DefaultInstanceDataPath -Service "vldb-sqlite" -Instance "default") -ServiceName $sqliteServiceName
 
     Register-Instance -Service "vldb-lancedb" -Instance "default"
-    Register-Instance -Service "vldb-duckdb" -Instance "default"
+    Register-Instance -Service "vldb-sqlite" -Instance "default"
 
     $script:Initialized = $true
     $script:InstalledScriptVersion = $ScriptVersion
@@ -1777,10 +1898,14 @@ function Update-ManagerScript {
     Write-Info "Manager script updated. Re-run the manager to load the new version."
 }
 
-function Update-ApplicationsToTag {
-    param([string]$TargetTag)
+function Update-ApplicationsToLatest {
+    param([string[]]$Services)
 
-    $installedKinds = Get-InstalledServiceKinds
+    $installedKinds = if ($Services -and $Services.Count -gt 0) {
+        @($Services | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    } else {
+        @(Get-InstalledServiceKinds)
+    }
     if (-not $installedKinds -or $installedKinds.Count -eq 0) {
         Write-Info "No application binaries are installed yet."
         return
@@ -1800,7 +1925,7 @@ function Update-ApplicationsToTag {
         Stop-AllInstances
 
         foreach ($service in $installedKinds) {
-            Install-ServiceBinary -Service $service -Tag $TargetTag
+            Install-ServiceBinary -Service $service
         }
     } catch {
         $updateError = $_.Exception.Message
@@ -1830,16 +1955,14 @@ function Update-ApplicationsToTag {
         throw ("Restart recovery failed: {0}" -f ($restartErrors -join "; "))
     }
 
-    $script:ReleaseTag = $TargetTag
     Write-Config
-    Write-Info "Application binaries updated to $TargetTag."
+    Write-Info "Application binaries were updated from their service repositories."
 }
 
 function Check-Updates {
     Write-Info "Checking for updates..."
 
     $remoteScriptVersion = Get-RemoteScriptVersion -ScriptName "vldb.ps1"
-    $latestTag = Try-GetLatestReleaseTag
 
     Write-Info "Current manager script version: $ScriptVersion"
     if ($remoteScriptVersion) {
@@ -1856,26 +1979,41 @@ function Check-Updates {
         Write-Info "Latest manager script version: unavailable"
     }
 
-    if ($script:ReleaseTag) {
-        Write-Info "Installed release tag: $($script:ReleaseTag)"
-    } else {
-        Write-Info "Installed release tag: not set"
+    $installedKinds = @(Get-InstalledServiceKinds)
+    if (-not $installedKinds -or $installedKinds.Count -eq 0) {
+        Write-Info "No application binaries are installed yet."
+        return
     }
 
-    if ($latestTag) {
-        Write-Info "Latest release tag: $latestTag"
-        if (-not $script:ReleaseTag) {
-            Write-Info "No release tag is stored locally yet."
-        } elseif ((Compare-VersionStrings $latestTag $script:ReleaseTag) -gt 0) {
-            Write-Info "A newer binary release is available."
-            if (Confirm-Choice "Update application binaries now?" "Y") {
-                Update-ApplicationsToTag -TargetTag $latestTag
+    $servicesToUpdate = New-Object System.Collections.Generic.List[string]
+    foreach ($service in $installedKinds) {
+        $displayName = if ($service -eq "vldb-lancedb") { "LanceDB" } else { "SQLite" }
+        $installedTag = Get-ServiceReleaseTag -Service $service
+        $latestTag = Try-GetLatestReleaseTag -Service $service
+
+        if ($installedTag) {
+            Write-Info "Installed $displayName release tag: $installedTag"
+        } else {
+            Write-Info "Installed $displayName release tag: not set"
+        }
+
+        if ($latestTag) {
+            Write-Info "Latest $displayName release tag: $latestTag"
+            if (-not $installedTag -or (Compare-VersionStrings $latestTag $installedTag) -gt 0) {
+                [void]$servicesToUpdate.Add($service)
             }
         } else {
-            Write-Info "Binary release is up to date."
+            Write-Info "Latest $displayName release tag: unavailable"
+        }
+    }
+
+    if ($servicesToUpdate.Count -gt 0) {
+        Write-Info "A newer binary release is available."
+        if (Confirm-Choice "Update application binaries now?" "Y") {
+            Update-ApplicationsToLatest -Services $servicesToUpdate.ToArray()
         }
     } else {
-        Write-Info "Latest release tag: unavailable"
+        Write-Info "Binary releases are up to date."
     }
 }
 

@@ -9,7 +9,7 @@ Use the script installer when you want:
 - a guided setup flow instead of manual archive extraction
 - automatic download of the correct release archives
 - first-time setup to be handed off to the local `vldb` manager
-- default config generation for `vldb-lancedb` and `vldb-duckdb`
+- default config generation for `vldb-lancedb` and `vldb-sqlite`
 - automatic service registration on supported platforms
 - the `vldb` manager command installed on the local machine
 
@@ -54,19 +54,19 @@ If your network path or proxy serves a stale cached copy of the `main` branch sc
 
 The installer and manager together can:
 
-- show the current installer version and latest release tag
+- show the current installer version
 - install only the manager script first
 - choose the install directory
 - refresh an older local manager first when the bundled manager is newer
 - launch the local manager automatically after the manager script is installed
 - configure bind IP, ports, data paths, and service names during first-time setup
-- download the matching GitHub Release archives
-- install `vldb-lancedb` and `vldb-duckdb`
+- download the matching GitHub Release archives from the dedicated service repositories
+- install `vldb-lancedb` and `vldb-sqlite`
 - generate default config files
 - install the `vldb` manager command
 - update common shell profile files on Linux and macOS so `vldb` is easier to use in new terminals
 - register services automatically for auto-start and auto-restart on supported platforms
-- separate LanceDB and DuckDB data roots outside the installation directory by default
+- separate LanceDB and SQLite data roots outside the installation directory by default
 
 The installer stores global settings here:
 
@@ -77,10 +77,11 @@ The config file records:
 
 - selected language
 - installation directory
-- installed release tag
+- installed LanceDB release tag
+- installed SQLite release tag
 - installed manager script version
 - default LanceDB data root
-- default DuckDB data root
+- default SQLite data root
 
 ## Dependency Handling
 
@@ -120,5 +121,5 @@ The `VulcanLocalDB Manager Script` can manage installed instances, adjust IP, po
 
 - Native binary archive install: [native-install.en.md](./native-install.en.md)
 - Docker quick install: [docker-install.en.md](./docker-install.en.md)
-- LanceDB service guide: [vldb-lancedb.en.md](./vldb-lancedb.en.md)
-- DuckDB service guide: [vldb-duckdb.en.md](./vldb-duckdb.en.md)
+- LanceDB service guide: [../vldb-lancedb/docs/README.en.md](../vldb-lancedb/docs/README.en.md)
+- SQLite service guide: [../vldb-sqlite/docs/README.en.md](../vldb-sqlite/docs/README.en.md)

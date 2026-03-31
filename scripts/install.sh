@@ -12,7 +12,7 @@ LANG_CODE="en"
 INSTALL_DIR=""
 INSTALL_TAG=""
 LANCEDB_ROOT="${GLOBAL_HOME}/lancedb"
-DUCKDB_ROOT="${GLOBAL_HOME}/duckdb"
+SQLITE_ROOT="${GLOBAL_HOME}/sqlite"
 LATEST_RELEASE_JSON=""
 CONTROLLER_SCRIPT_VERSION="${SCRIPT_VERSION}"
 INITIALIZED=0
@@ -433,7 +433,7 @@ is_valid_port() {
 default_data_root() {
   case "$1" in
     vldb-lancedb) printf '%s' "${GLOBAL_HOME}/lancedb" ;;
-    *) printf '%s' "${GLOBAL_HOME}/duckdb" ;;
+    *) printf '%s' "${GLOBAL_HOME}/sqlite" ;;
   esac
 }
 
@@ -441,12 +441,12 @@ default_instance_data_path() {
   local service="$1"
   local instance="$2"
   local lancedb_root="${3:-${LANCEDB_ROOT}}"
-  local duckdb_root="${4:-${DUCKDB_ROOT}}"
+  local sqlite_root="${4:-${SQLITE_ROOT}}"
 
   if [[ "${service}" == "vldb-lancedb" ]]; then
     printf '%s' "${lancedb_root}/${instance}"
   else
-    printf '%s' "${duckdb_root}/${instance}/duckdb.db"
+    printf '%s' "${sqlite_root}/${instance}/sqlite.db"
   fi
 }
 
@@ -472,7 +472,7 @@ list_install_config_files() {
   local config_dir="${install_root}/config"
 
   [[ -d "${config_dir}" ]] || return 0
-  find "${config_dir}" -maxdepth 1 -type f \( -name "vldb-lancedb-*.json" -o -name "vldb-duckdb-*.json" \) | sort
+  find "${config_dir}" -maxdepth 1 -type f \( -name "vldb-lancedb-*.json" -o -name "vldb-sqlite-*.json" \) | sort
 }
 
 config_db_path() {
@@ -549,19 +549,13 @@ try_fetch_latest_tag() {
 
 show_update_notice() {
   local remote_script_version=""
-  local latest_tag=""
 
   remote_script_version="$(try_fetch_remote_script_version "install.sh" || true)"
-  latest_tag="$(try_fetch_latest_tag || true)"
 
   if [[ -n "${remote_script_version}" && "$(version_compare "${remote_script_version}" "${SCRIPT_VERSION}")" == "1" ]]; then
     line "A newer installer script is available: ${remote_script_version} (current: ${SCRIPT_VERSION})." "发现更新的安装脚本版本：${remote_script_version}（当前：${SCRIPT_VERSION}）。"
   else
     line "Installer script version: ${SCRIPT_VERSION}" "安装脚本版本：${SCRIPT_VERSION}"
-  fi
-
-  if [[ -n "${latest_tag}" ]]; then
-    line "Latest release tag: ${latest_tag}" "最新 release 标签：${latest_tag}"
   fi
 }
 
@@ -731,15 +725,22 @@ verify_checksum() {
 
 write_global_config() {
   local existing_release_tag=""
+  local existing_lancedb_release_tag=""
+  local existing_sqlite_release_tag=""
   local existing_lancedb_root=""
-  local existing_duckdb_root=""
+  local existing_sqlite_root=""
   local existing_initialized=""
 
   step "Writing global installer config" "正在写入全局安装配置"
   if [[ -f "${GLOBAL_CONFIG}" ]]; then
     existing_release_tag="$(sed -nE 's/.*"release_tag":[[:space:]]*"([^"]*)".*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
+    existing_lancedb_release_tag="$(sed -nE 's/.*"lancedb_release_tag":[[:space:]]*"([^"]*)".*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
+    existing_sqlite_release_tag="$(sed -nE 's/.*"sqlite_release_tag":[[:space:]]*"([^"]*)".*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
     existing_lancedb_root="$(sed -nE 's/.*"lancedb_root":[[:space:]]*"([^"]*)".*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
-    existing_duckdb_root="$(sed -nE 's/.*"duckdb_root":[[:space:]]*"([^"]*)".*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
+    existing_sqlite_root="$(sed -nE 's/.*"sqlite_root":[[:space:]]*"([^"]*)".*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
+    if [[ -z "${existing_sqlite_root}" ]]; then
+      existing_sqlite_root="$(sed -nE 's/.*"duckdb_root":[[:space:]]*"([^"]*)".*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
+    fi
     existing_initialized="$(sed -nE 's/.*"initialized":[[:space:]]*(true|false).*/\1/p' "${GLOBAL_CONFIG}" | head -n1)"
   fi
   mkdir -p "${GLOBAL_HOME}"
@@ -747,10 +748,11 @@ write_global_config() {
 {
   "language": "${LANG_CODE}",
   "install_dir": "${INSTALL_DIR}",
-  "release_tag": "${INSTALL_TAG:-${existing_release_tag}}",
   "script_version": "${CONTROLLER_SCRIPT_VERSION}",
+  "lancedb_release_tag": "${existing_lancedb_release_tag:-${existing_release_tag}}",
+  "sqlite_release_tag": "${existing_sqlite_release_tag:-${existing_release_tag}}",
   "lancedb_root": "${existing_lancedb_root:-${LANCEDB_ROOT}}",
-  "duckdb_root": "${existing_duckdb_root:-${DUCKDB_ROOT}}",
+  "sqlite_root": "${existing_sqlite_root:-${SQLITE_ROOT}}",
   "initialized": $( [[ "${existing_initialized}" == "true" ]] && printf 'true' || printf 'false' )
 }
 EOF
