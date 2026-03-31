@@ -28,6 +28,7 @@ struct AppState {
     root_connection: Arc<Mutex<Connection>>,
     execution_gate: Arc<Semaphore>,
     logger: Arc<ServiceLogger>,
+    connection_config: Config,
 }
 
 #[derive(Clone, Debug)]
@@ -93,12 +94,13 @@ impl Drop for WorkerCompletionSignal {
 }
 
 impl DuckDbGrpcService {
-    pub fn new(root_connection: Connection, logger: Arc<ServiceLogger>) -> Self {
+    pub fn new(root_connection: Connection, logger: Arc<ServiceLogger>, config: Config) -> Self {
         Self {
             state: Arc::new(AppState {
                 root_connection: Arc::new(Mutex::new(root_connection)),
                 execution_gate: Arc::new(Semaphore::new(1)),
                 logger,
+                connection_config: config,
             }),
         }
     }
@@ -341,19 +343,20 @@ fn run_execute_script(
     params_json: String,
     interrupt_tx: Option<oneshot::Sender<Arc<InterruptHandle>>>,
 ) -> Result<ExecuteResponse, Status> {
-    let result = (|| {
+    let mut conn = lock_shared_connection(&state)?;
+    if let Some(tx) = interrupt_tx {
+        let _ = tx.send(conn.interrupt_handle());
+    }
+
+    let result = (|| -> Result<ExecuteResponse, RequestFailure> {
         set_request_stage(&context, "acquiring_connection_lock");
-        let conn = lock_shared_connection(&state)?;
-        if let Some(tx) = interrupt_tx {
-            let _ = tx.send(conn.interrupt_handle());
-        }
         set_request_stage(&context, "parsing_params");
-        let bound_values = parse_bound_params(&params_json)?;
+        let bound_values = parse_bound_params(&params_json).map_err(RequestFailure::Status)?;
 
         if bound_values.is_empty() {
             set_request_stage(&context, "executing_batch");
             conn.execute_batch(&sql)
-                .map_err(|err| status_internal("duckdb execute_batch failed", err))?;
+                .map_err(|err| RequestFailure::duckdb("duckdb execute_batch failed", err, true))?;
 
             return Ok(ExecuteResponse {
                 success: true,
@@ -362,26 +365,28 @@ fn run_execute_script(
         }
 
         if has_multiple_sql_statements(&sql) {
-            return Err(Status::invalid_argument(
+            return Err(RequestFailure::Status(Status::invalid_argument(
                 "params_json is only supported for a single SQL statement",
-            ));
+            )));
         }
 
         set_request_stage(&context, "preparing_statement");
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|err| status_internal("duckdb prepare failed", err))?;
+            .map_err(|err| RequestFailure::duckdb("duckdb prepare failed", err, false))?;
         let params = bind_values_as_params(&bound_values);
         set_request_stage(&context, "executing_statement");
         let rows_changed = stmt
             .execute(params.as_slice())
-            .map_err(|err| status_internal("duckdb execute failed", err))?;
+            .map_err(|err| RequestFailure::duckdb("duckdb execute failed", err, true))?;
 
         Ok(ExecuteResponse {
             success: true,
             message: format!("statement executed successfully (rows_changed={rows_changed})"),
         })
     })();
+    let result =
+        result.map_err(|failure| finalize_request_failure(&context, &state, &mut conn, failure));
 
     match &result {
         Ok(response) => log_request_succeeded(&context, response.message.as_str()),
@@ -399,56 +404,58 @@ fn run_query_streaming(
     tx: mpsc::Sender<Result<QueryResponse, Status>>,
     interrupt_tx: Option<oneshot::Sender<Arc<InterruptHandle>>>,
 ) -> Result<(), Status> {
-    let result = (|| {
+    let mut conn = lock_shared_connection(&state)?;
+    if let Some(tx) = interrupt_tx {
+        let _ = tx.send(conn.interrupt_handle());
+    }
+
+    let result = (|| -> Result<(), RequestFailure> {
         set_request_stage(&context, "acquiring_connection_lock");
-        let conn = lock_shared_connection(&state)?;
-        if let Some(tx) = interrupt_tx {
-            let _ = tx.send(conn.interrupt_handle());
-        }
         set_request_stage(&context, "parsing_params");
-        let bound_values = parse_bound_params(&params_json)?;
+        let bound_values = parse_bound_params(&params_json).map_err(RequestFailure::Status)?;
         set_request_stage(&context, "preparing_statement");
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|err| status_internal("duckdb prepare failed", err))?;
+            .map_err(|err| RequestFailure::duckdb("duckdb prepare failed", err, false))?;
         let params = bind_values_as_params(&bound_values);
 
         set_request_stage(&context, "executing_query");
         let mut batches = stmt
             .query_arrow(params.as_slice())
-            .map_err(|err| status_internal("duckdb query_arrow failed", err))?;
+            .map_err(|err| RequestFailure::duckdb("duckdb query_arrow failed", err, false))?;
 
         let schema = batches.get_schema();
         let chunk_writer = GrpcChunkWriter::new(tx, DEFAULT_IPC_CHUNK_BYTES);
-        let mut ipc_writer = StreamWriter::try_new(chunk_writer, &schema)
-            .map_err(|err| status_internal("arrow stream header write failed", err))?;
+        let mut ipc_writer = StreamWriter::try_new(chunk_writer, &schema).map_err(|err| {
+            RequestFailure::Status(status_internal("arrow stream header write failed", err))
+        })?;
 
         set_request_stage(&context, "writing_arrow_stream");
-        ipc_writer
-            .flush()
-            .map_err(|err| status_internal("arrow stream flush failed", err))?;
+        ipc_writer.flush().map_err(|err| {
+            RequestFailure::Status(status_internal("arrow stream flush failed", err))
+        })?;
 
         let mut batch_count = 0usize;
         let mut row_count = 0usize;
         for batch in &mut batches {
             batch_count += 1;
             row_count += batch.num_rows();
-            ipc_writer
-                .write(&batch)
-                .map_err(|err| status_internal("arrow batch write failed", err))?;
+            ipc_writer.write(&batch).map_err(|err| {
+                RequestFailure::Status(status_internal("arrow batch write failed", err))
+            })?;
 
-            ipc_writer
-                .flush()
-                .map_err(|err| status_internal("arrow batch flush failed", err))?;
+            ipc_writer.flush().map_err(|err| {
+                RequestFailure::Status(status_internal("arrow batch flush failed", err))
+            })?;
         }
 
-        ipc_writer
-            .finish()
-            .map_err(|err| status_internal("arrow stream finish failed", err))?;
+        ipc_writer.finish().map_err(|err| {
+            RequestFailure::Status(status_internal("arrow stream finish failed", err))
+        })?;
 
-        ipc_writer
-            .flush()
-            .map_err(|err| status_internal("arrow final flush failed", err))?;
+        ipc_writer.flush().map_err(|err| {
+            RequestFailure::Status(status_internal("arrow final flush failed", err))
+        })?;
 
         let metrics = ipc_writer.get_ref().metrics();
         log_request_succeeded(
@@ -462,6 +469,8 @@ fn run_query_streaming(
 
         Ok(())
     })();
+    let result =
+        result.map_err(|failure| finalize_request_failure(&context, &state, &mut conn, failure));
 
     if let Err(status) = &result {
         log_request_failed(&context, status);
@@ -477,50 +486,56 @@ fn run_query_json(
     params_json: String,
     interrupt_tx: Option<oneshot::Sender<Arc<InterruptHandle>>>,
 ) -> Result<QueryJsonResponse, Status> {
-    let result = (|| {
+    let mut conn = lock_shared_connection(&state)?;
+    if let Some(tx) = interrupt_tx {
+        let _ = tx.send(conn.interrupt_handle());
+    }
+
+    let result = (|| -> Result<QueryJsonResponse, RequestFailure> {
         set_request_stage(&context, "acquiring_connection_lock");
-        let conn = lock_shared_connection(&state)?;
-        if let Some(tx) = interrupt_tx {
-            let _ = tx.send(conn.interrupt_handle());
-        }
         set_request_stage(&context, "parsing_params");
-        let bound_values = parse_bound_params(&params_json)?;
+        let bound_values = parse_bound_params(&params_json).map_err(RequestFailure::Status)?;
         set_request_stage(&context, "preparing_statement");
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|err| status_internal("duckdb prepare failed", err))?;
+            .map_err(|err| RequestFailure::duckdb("duckdb prepare failed", err, false))?;
         let params = bind_values_as_params(&bound_values);
         set_request_stage(&context, "executing_query");
         let mut rows = stmt
             .query(params.as_slice())
-            .map_err(|err| status_internal("duckdb query failed", err))?;
+            .map_err(|err| RequestFailure::duckdb("duckdb query failed", err, false))?;
         let column_names = rows
             .as_ref()
-            .ok_or_else(|| Status::internal("duckdb rows lost statement metadata"))?
+            .ok_or_else(|| {
+                RequestFailure::Status(Status::internal("duckdb rows lost statement metadata"))
+            })?
             .column_names();
 
         let mut json_rows = Vec::<JsonValue>::new();
         set_request_stage(&context, "fetching_rows");
         while let Some(row) = rows
             .next()
-            .map_err(|err| status_internal("duckdb row fetch failed", err))?
+            .map_err(|err| RequestFailure::duckdb("duckdb row fetch failed", err, false))?
         {
             let mut object = JsonMap::new();
             for (index, column_name) in column_names.iter().enumerate() {
-                let value = row
-                    .get_ref(index)
-                    .map_err(|err| status_internal("duckdb value access failed", err))?;
+                let value = row.get_ref(index).map_err(|err| {
+                    RequestFailure::duckdb("duckdb value access failed", err, false)
+                })?;
                 object.insert(column_name.clone(), duckdb_value_ref_to_json(value));
             }
             json_rows.push(JsonValue::Object(object));
         }
 
         set_request_stage(&context, "serializing_json");
-        let json_data = serde_json::to_string(&json_rows)
-            .map_err(|err| status_internal("serialize JSON result failed", err))?;
+        let json_data = serde_json::to_string(&json_rows).map_err(|err| {
+            RequestFailure::Status(status_internal("serialize JSON result failed", err))
+        })?;
 
         Ok(QueryJsonResponse { json_data })
     })();
+    let result =
+        result.map_err(|failure| finalize_request_failure(&context, &state, &mut conn, failure));
 
     match &result {
         Ok(response) => log_request_succeeded(
@@ -688,8 +703,124 @@ fn time_unit_name(unit: DuckTimeUnit) -> &'static str {
     }
 }
 
+#[derive(Debug)]
+enum RequestFailure {
+    Status(Status),
+    DuckDb {
+        prefix: &'static str,
+        error_message: String,
+        commit_outcome_uncertain: bool,
+    },
+}
+
+impl RequestFailure {
+    fn duckdb(
+        prefix: &'static str,
+        error: impl std::fmt::Display,
+        commit_outcome_uncertain: bool,
+    ) -> Self {
+        Self::DuckDb {
+            prefix,
+            error_message: error.to_string(),
+            commit_outcome_uncertain,
+        }
+    }
+}
+
 fn status_internal<E: std::fmt::Display>(prefix: &str, error: E) -> Status {
     Status::internal(format!("{prefix}: {error}"))
+}
+
+fn finalize_request_failure(
+    context: &RequestLogContext,
+    state: &Arc<AppState>,
+    conn: &mut Connection,
+    failure: RequestFailure,
+) -> Status {
+    match failure {
+        RequestFailure::Status(status) => status,
+        RequestFailure::DuckDb {
+            prefix,
+            error_message,
+            commit_outcome_uncertain,
+        } => {
+            if !should_reset_shared_connection(&error_message) {
+                return status_internal(prefix, error_message);
+            }
+
+            match reopen_shared_connection(conn, &state.connection_config) {
+                Ok(()) => {
+                    log_connection_recovery(
+                        context,
+                        prefix,
+                        &error_message,
+                        commit_outcome_uncertain,
+                    );
+                    if commit_outcome_uncertain {
+                        Status::aborted(format!(
+                            "{prefix}: {error_message}; commit outcome may be uncertain and the shared DuckDB connection was reset; inspect state before retrying"
+                        ))
+                    } else {
+                        Status::unavailable(format!(
+                            "{prefix}: {error_message}; the shared DuckDB connection was reset, retry the request"
+                        ))
+                    }
+                }
+                Err(reset_error) => {
+                    context.logger.log(
+                        "recover_error",
+                        format!(
+                            "request_id={} op={} stage={} detail=failed to reset shared DuckDB connection after fatal error prefix=\"{}\" error=\"{}\" reset_error=\"{}\"",
+                            context.request_id,
+                            context.operation,
+                            context.progress.snapshot(),
+                            prefix,
+                            error_message,
+                            reset_error,
+                        ),
+                    );
+                    Status::internal(format!(
+                        "{prefix}: {error_message}; additionally failed to reset shared DuckDB connection: {reset_error}"
+                    ))
+                }
+            }
+        }
+    }
+}
+
+fn should_reset_shared_connection(error_message: &str) -> bool {
+    error_message
+        .to_ascii_lowercase()
+        .contains("resource deadlock would occur")
+}
+
+fn reopen_shared_connection(conn: &mut Connection, config: &Config) -> Result<(), String> {
+    let new_conn = Connection::open(&config.db_path)
+        .map_err(|err| format!("reopen connection failed: {err}"))?;
+    apply_connection_pragmas(&new_conn, config)
+        .map_err(|err| format!("reapply pragmas failed: {err}"))?;
+    *conn = new_conn;
+    Ok(())
+}
+
+fn log_connection_recovery(
+    context: &RequestLogContext,
+    prefix: &str,
+    error_message: &str,
+    commit_outcome_uncertain: bool,
+) {
+    context.logger.log(
+        "recover",
+        format!(
+            "request_id={} op={} stage={} detail=reset shared DuckDB connection after fatal error prefix=\"{}\" commit_outcome_uncertain={} error=\"{}\"",
+            context.request_id,
+            context.operation,
+            context.progress.snapshot(),
+            prefix,
+            commit_outcome_uncertain,
+            error_message,
+        ),
+    );
 }
 
 fn build_request_context<T>(
@@ -1032,7 +1163,7 @@ impl Write for GrpcChunkWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_grpc_timeout_header, preview_sql};
+    use super::{parse_grpc_timeout_header, preview_sql, should_reset_shared_connection};
     use std::time::Duration;
 
     #[test]
@@ -1079,5 +1210,22 @@ mod tests {
         let preview = preview_sql(&long_sql, 32);
         assert!(preview.ends_with("..."));
         assert!(preview.len() > 10);
+    }
+
+    #[test]
+    fn reset_detection_matches_duckdb_deadlock_message() {
+        assert!(should_reset_shared_connection(
+            "TransactionContext Error: Failed to commit: resource deadlock would occur"
+        ));
+        assert!(should_reset_shared_connection(
+            "Invalid Error: resource deadlock would occur"
+        ));
+    }
+
+    #[test]
+    fn reset_detection_ignores_regular_errors() {
+        assert!(!should_reset_shared_connection(
+            "Catalog Error: Table with name demo does not exist"
+        ));
     }
 }

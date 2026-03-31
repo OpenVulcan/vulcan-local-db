@@ -49,7 +49,7 @@ async fn main() -> Result<(), BoxError> {
     }
     println!("gRPC listening on {addr}");
 
-    let svc = DuckDbGrpcService::new(conn, logger);
+    let svc = DuckDbGrpcService::new(conn, logger, config.clone());
 
     Server::builder()
         .add_service(DuckDbServiceServer::new(svc))
