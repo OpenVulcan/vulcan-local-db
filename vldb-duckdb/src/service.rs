@@ -25,7 +25,6 @@ static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
 struct AppState {
-    root_connection: Arc<Mutex<Connection>>,
     config: Config,
     logger: Arc<ServiceLogger>,
 }
@@ -38,6 +37,7 @@ pub struct DuckDbGrpcService {
 #[derive(Clone, Debug)]
 struct RequestLogContext {
     logger: Arc<ServiceLogger>,
+    progress: Arc<RequestProgress>,
     request_id: u64,
     operation: &'static str,
     remote_addr: Option<SocketAddr>,
@@ -50,6 +50,29 @@ struct RequestLogContext {
     slow_query_log_enabled: bool,
     slow_query_threshold: Duration,
     slow_query_full_sql_enabled: bool,
+}
+
+#[derive(Debug)]
+struct RequestProgress {
+    stage: Mutex<&'static str>,
+}
+
+impl RequestProgress {
+    fn new(initial_stage: &'static str) -> Self {
+        Self {
+            stage: Mutex::new(initial_stage),
+        }
+    }
+
+    fn set(&self, stage: &'static str) {
+        if let Ok(mut guard) = self.stage.lock() {
+            *guard = stage;
+        }
+    }
+
+    fn snapshot(&self) -> &'static str {
+        self.stage.lock().map(|guard| *guard).unwrap_or("unknown")
+    }
 }
 
 struct WorkerCompletionSignal(Option<oneshot::Sender<()>>);
@@ -69,13 +92,9 @@ impl Drop for WorkerCompletionSignal {
 }
 
 impl DuckDbGrpcService {
-    pub fn new(root_connection: Connection, config: Config, logger: Arc<ServiceLogger>) -> Self {
+    pub fn new(config: Config, logger: Arc<ServiceLogger>) -> Self {
         Self {
-            state: Arc::new(AppState {
-                root_connection: Arc::new(Mutex::new(root_connection)),
-                config,
-                logger,
-            }),
+            state: Arc::new(AppState { config, logger }),
         }
     }
 }
@@ -263,22 +282,14 @@ pub fn apply_connection_pragmas(conn: &Connection, config: &Config) -> duckdb::R
     conn.execute_batch(&sql)
 }
 
-fn clone_configured_connection(state: &Arc<AppState>) -> Result<Connection, Status> {
-    let cloned = {
-        let guard = state
-            .root_connection
-            .lock()
-            .map_err(|_| Status::internal("duckdb root connection mutex is poisoned"))?;
+fn open_configured_connection(state: &Arc<AppState>) -> Result<Connection, Status> {
+    let conn = Connection::open(&state.config.db_path)
+        .map_err(|err| Status::internal(format!("duckdb connection open failed: {err}")))?;
 
-        guard
-            .try_clone()
-            .map_err(|err| Status::internal(format!("duckdb connection clone failed: {err}")))?
-    };
-
-    apply_connection_pragmas(&cloned, &state.config)
+    apply_connection_pragmas(&conn, &state.config)
         .map_err(|err| Status::internal(format!("duckdb pragma setup failed: {err}")))?;
 
-    Ok(cloned)
+    Ok(conn)
 }
 
 fn run_execute_script(
@@ -289,13 +300,16 @@ fn run_execute_script(
     interrupt_tx: Option<oneshot::Sender<Arc<InterruptHandle>>>,
 ) -> Result<ExecuteResponse, Status> {
     let result = (|| {
-        let conn = clone_configured_connection(&state)?;
+        set_request_stage(&context, "opening_connection");
+        let conn = open_configured_connection(&state)?;
         if let Some(tx) = interrupt_tx {
             let _ = tx.send(conn.interrupt_handle());
         }
+        set_request_stage(&context, "parsing_params");
         let bound_values = parse_bound_params(&params_json)?;
 
         if bound_values.is_empty() {
+            set_request_stage(&context, "executing_batch");
             conn.execute_batch(&sql)
                 .map_err(|err| status_internal("duckdb execute_batch failed", err))?;
 
@@ -311,10 +325,12 @@ fn run_execute_script(
             ));
         }
 
+        set_request_stage(&context, "preparing_statement");
         let mut stmt = conn
             .prepare(&sql)
             .map_err(|err| status_internal("duckdb prepare failed", err))?;
         let params = bind_values_as_params(&bound_values);
+        set_request_stage(&context, "executing_statement");
         let rows_changed = stmt
             .execute(params.as_slice())
             .map_err(|err| status_internal("duckdb execute failed", err))?;
@@ -342,16 +358,20 @@ fn run_query_streaming(
     interrupt_tx: Option<oneshot::Sender<Arc<InterruptHandle>>>,
 ) -> Result<(), Status> {
     let result = (|| {
-        let conn = clone_configured_connection(&state)?;
+        set_request_stage(&context, "opening_connection");
+        let conn = open_configured_connection(&state)?;
         if let Some(tx) = interrupt_tx {
             let _ = tx.send(conn.interrupt_handle());
         }
+        set_request_stage(&context, "parsing_params");
         let bound_values = parse_bound_params(&params_json)?;
+        set_request_stage(&context, "preparing_statement");
         let mut stmt = conn
             .prepare(&sql)
             .map_err(|err| status_internal("duckdb prepare failed", err))?;
         let params = bind_values_as_params(&bound_values);
 
+        set_request_stage(&context, "executing_query");
         let mut batches = stmt
             .query_arrow(params.as_slice())
             .map_err(|err| status_internal("duckdb query_arrow failed", err))?;
@@ -361,6 +381,7 @@ fn run_query_streaming(
         let mut ipc_writer = StreamWriter::try_new(chunk_writer, &schema)
             .map_err(|err| status_internal("arrow stream header write failed", err))?;
 
+        set_request_stage(&context, "writing_arrow_stream");
         ipc_writer
             .flush()
             .map_err(|err| status_internal("arrow stream flush failed", err))?;
@@ -415,15 +436,19 @@ fn run_query_json(
     interrupt_tx: Option<oneshot::Sender<Arc<InterruptHandle>>>,
 ) -> Result<QueryJsonResponse, Status> {
     let result = (|| {
-        let conn = clone_configured_connection(&state)?;
+        set_request_stage(&context, "opening_connection");
+        let conn = open_configured_connection(&state)?;
         if let Some(tx) = interrupt_tx {
             let _ = tx.send(conn.interrupt_handle());
         }
+        set_request_stage(&context, "parsing_params");
         let bound_values = parse_bound_params(&params_json)?;
+        set_request_stage(&context, "preparing_statement");
         let mut stmt = conn
             .prepare(&sql)
             .map_err(|err| status_internal("duckdb prepare failed", err))?;
         let params = bind_values_as_params(&bound_values);
+        set_request_stage(&context, "executing_query");
         let mut rows = stmt
             .query(params.as_slice())
             .map_err(|err| status_internal("duckdb query failed", err))?;
@@ -433,6 +458,7 @@ fn run_query_json(
             .column_names();
 
         let mut json_rows = Vec::<JsonValue>::new();
+        set_request_stage(&context, "fetching_rows");
         while let Some(row) = rows
             .next()
             .map_err(|err| status_internal("duckdb row fetch failed", err))?
@@ -447,6 +473,7 @@ fn run_query_json(
             json_rows.push(JsonValue::Object(object));
         }
 
+        set_request_stage(&context, "serializing_json");
         let json_data = serde_json::to_string(&json_rows)
             .map_err(|err| status_internal("serialize JSON result failed", err))?;
 
@@ -633,6 +660,7 @@ fn build_request_context<T>(
     let logging = state.logger.config();
     RequestLogContext {
         logger: Arc::clone(&state.logger),
+        progress: Arc::new(RequestProgress::new("queued")),
         request_id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
         operation,
         remote_addr: request.remote_addr(),
@@ -650,6 +678,10 @@ fn build_request_context<T>(
         slow_query_threshold: Duration::from_millis(logging.slow_query_threshold_ms),
         slow_query_full_sql_enabled: logging.slow_query_full_sql_enabled,
     }
+}
+
+fn set_request_stage(context: &RequestLogContext, stage: &'static str) {
+    context.progress.set(stage);
 }
 
 fn spawn_deadline_interrupt_watcher(
@@ -774,12 +806,13 @@ fn log_request_timeout(context: &RequestLogContext) {
     context.logger.log(
         "timeout",
         format!(
-            "request_id={} op={} elapsed_ms={} remote={} grpc_timeout={} sql=\"{}\" message=interrupting running DuckDB query because the gRPC deadline expired",
+            "request_id={} op={} elapsed_ms={} remote={} grpc_timeout={} stage={} sql=\"{}\" message=interrupting running DuckDB query because the gRPC deadline expired",
             context.request_id,
             context.operation,
             context.started_at.elapsed().as_millis(),
             format_remote_addr(context.remote_addr),
             format_optional_duration(context.grpc_timeout),
+            context.progress.snapshot(),
             context.sql_preview,
         ),
     );
@@ -791,11 +824,12 @@ fn log_request_succeeded(context: &RequestLogContext, detail: impl AsRef<str>) {
         context.logger.log(
             "ok",
             format!(
-                "request_id={} op={} elapsed_ms={} remote={} detail={} sql=\"{}\"",
+                "request_id={} op={} elapsed_ms={} remote={} stage={} detail={} sql=\"{}\"",
                 context.request_id,
                 context.operation,
                 elapsed.as_millis(),
                 format_remote_addr(context.remote_addr),
+                context.progress.snapshot(),
                 detail.as_ref(),
                 context.sql_preview,
             ),
@@ -809,11 +843,12 @@ fn log_request_failed(context: &RequestLogContext, status: &Status) {
     context.logger.log(
         "error",
         format!(
-            "request_id={} op={} elapsed_ms={} remote={} code={:?} message={} sql=\"{}\"",
+            "request_id={} op={} elapsed_ms={} remote={} stage={} code={:?} message={} sql=\"{}\"",
             context.request_id,
             context.operation,
             elapsed.as_millis(),
             format_remote_addr(context.remote_addr),
+            context.progress.snapshot(),
             status.code(),
             status.message(),
             context.sql_preview,
@@ -841,12 +876,13 @@ fn maybe_log_slow_query(
     context.logger.log(
         "slow_query",
         format!(
-            "request_id={} op={} elapsed_ms={} threshold_ms={} remote={} state={} detail={} sql=\"{}\"",
+            "request_id={} op={} elapsed_ms={} threshold_ms={} remote={} stage={} state={} detail={} sql=\"{}\"",
             context.request_id,
             context.operation,
             elapsed.as_millis(),
             context.slow_query_threshold.as_millis(),
             format_remote_addr(context.remote_addr),
+            context.progress.snapshot(),
             final_state,
             detail,
             sql_text,
