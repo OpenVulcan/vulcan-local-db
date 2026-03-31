@@ -2,16 +2,18 @@
 
 [English](./README.md) | 简体中文
 
-`VulcanLocalDB` 是一个面向本地部署场景的数据网关工作区，适合应用程序和 AI Agent 在不依赖远程中心化服务的情况下，统一访问本地向量数据与本地 SQL 数据。仓库当前包含两个 Rust gRPC 服务和一个 Rust 终端管理器：
+`VulcanLocalDB` 是一个面向本地部署场景的数据网关工作区，适合应用程序和 AI Agent 在不依赖远程中心化服务的情况下，统一访问本地向量数据与本地 SQL 数据。仓库当前包含三个 Rust gRPC 服务和一个 Rust 终端管理器：
 
 - `vldb-lancedb`：基于 LanceDB 的向量数据网关
 - `vldb-duckdb`：基于 DuckDB 的 SQL 与分析数据网关
+- `vldb-sqlite`：面向嵌入式本地库的 SQLite SQL 网关
 - `vldb-manager`：基于 `ratatui` 的跨平台控制台，用来统一构建、启动、停止和观测本地网关
 
 这两个服务组合起来，可以提供一套清晰的本地数据访问方式：
 
 - 用 LanceDB 保存和检索向量数据
 - 用 DuckDB 执行安全的参数化 SQL
+- 通过 gRPC 暴露嵌入式 SQLite 数据库
 - 小结果集走 JSON，大结果集走 Arrow IPC
 - 通过稳定的 gRPC 接口供其他语言集成
 
@@ -21,9 +23,10 @@
 | --- | --- | --- |
 | `vldb-lancedb` | 向量表管理、向量写入、近邻检索、条件删除、删表 | Agent Memory、本地 RAG、语义检索、遗忘与清理 |
 | `vldb-duckdb` | 参数化 SQL 执行、轻量 JSON 查询、Arrow IPC 流式查询 | 本地分析、统计计数、表格查询接口、ETL 辅助 |
+| `vldb-sqlite` | 面向 SQLite 的参数化 SQL、JSON 查询与 Arrow IPC 流式查询 | 嵌入式应用数据库、本地元数据存储、轻量事务型 SQL 接口 |
 | `vldb-manager` | 跨平台终端 UI，用来生成配置、构建服务、控制进程和查看输出 | 用统一的 Rust 界面替代分散的 shell / PowerShell 控制脚本 |
 
-两个网关服务都带有 Go 示例客户端和 Docker 打包配置，而 `vldb-manager` 提供本地运维入口。
+`vldb-lancedb` 和 `vldb-duckdb` 带有 Go 示例客户端，三个网关服务都带有本地 Docker 打包配置，而 `vldb-manager` 提供本地运维入口。
 
 ## 这个项目适合什么场景
 
@@ -125,6 +128,9 @@ cargo build
 cd ../vldb-duckdb
 cargo build
 
+cd ../vldb-sqlite
+cargo build
+
 cd ../vldb-manager
 cargo build
 ```
@@ -142,6 +148,7 @@ cargo build
 .
 |-- vldb-lancedb/
 |-- vldb-duckdb/
+|-- vldb-sqlite/
 |-- vldb-manager/
 |-- docs/
 |-- docker-compose.example.yml
@@ -169,18 +176,23 @@ cargo build
   - English: [docs/docker.en.md](./docs/docker.en.md)
 - 服务说明：
   - `vldb-lancedb`
-    - 中文：[docs/vldb-lancedb.zh-CN.md](./docs/vldb-lancedb.zh-CN.md)
-    - English: [docs/vldb-lancedb.en.md](./docs/vldb-lancedb.en.md)
+    - README：[vldb-lancedb/README.md](./vldb-lancedb/README.md)
+    - 中文：[vldb-lancedb/docs/README.zh-CN.md](./vldb-lancedb/docs/README.zh-CN.md)
+    - English: [vldb-lancedb/docs/README.en.md](./vldb-lancedb/docs/README.en.md)
   - `vldb-duckdb`
     - 中文：[docs/vldb-duckdb.zh-CN.md](./docs/vldb-duckdb.zh-CN.md)
     - English: [docs/vldb-duckdb.en.md](./docs/vldb-duckdb.en.md)
+  - `vldb-sqlite`
+    - README：[vldb-sqlite/README.md](./vldb-sqlite/README.md)
+    - 中文：[vldb-sqlite/docs/README.zh-CN.md](./vldb-sqlite/docs/README.zh-CN.md)
+    - English: [vldb-sqlite/docs/README.en.md](./vldb-sqlite/docs/README.en.md)
 - 管理器说明：
   - `vldb-manager`
     - README：[vldb-manager/README.md](./vldb-manager/README.md)
 
 ## 当前状态
 
-- 两个 Rust 服务都可以完成 `cargo build` 和 `cargo build --release`
+- `vldb-lancedb`、`vldb-duckdb` 和 `vldb-sqlite` 都可以完成 `cargo build` 和 `cargo build --release`
 - `vldb-manager` 已作为 Rust 2024 + `ratatui` 终端界面加入工作区
 - 两个 Go 示例客户端都可以构建并运行
 - 两个服务都已经完成本地 gRPC 端到端 smoke test
@@ -191,6 +203,7 @@ cargo build
 - 本仓库提供的是 gRPC 服务，不是 REST API
 - `vldb-lancedb` 在 Rust 编译阶段依赖 `protoc`
 - `vldb-duckdb` 同时支持 `QueryJson` 和 `QueryStream`
+- `vldb-sqlite` 的 RPC 形态参考 `vldb-duckdb`，但配置与运行时行为是按 SQLite 的 PRAGMA、锁和动态类型特性实现的
 - 在 Windows 的 Docker Desktop 环境下，`vldb-lancedb` 推荐使用 Docker 命名卷持久化
 
 ## License
