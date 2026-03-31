@@ -286,6 +286,15 @@ function Get-BundledManagerVersion {
     return (Get-ScriptVersionFromFile $bundledPath)
 }
 
+function Get-DesiredManagerVersion {
+    $bundledVersion = Get-BundledManagerVersion
+    if ($bundledVersion) {
+        return $bundledVersion
+    }
+
+    return (Get-RemoteScriptVersion -ScriptName "vldb.ps1" -Pattern '\$ScriptVersion\s*=\s*"([^"]+)"')
+}
+
 function Install-ManagerScript {
     $sourcePath = $PSCommandPath
     $sourceDir = $null
@@ -418,9 +427,14 @@ function Invoke-InstalledManagerIfPresent {
     }
 
     $bundledVersion = Get-BundledManagerVersion
+    $desiredVersion = Get-DesiredManagerVersion
     $installedVersion = Get-ScriptVersionFromFile $managerPath
-    if ($bundledVersion -and (Compare-VersionStrings $bundledVersion $installedVersion) -gt 0) {
-        Write-Info "The bundled manager is newer than the installed one. Refreshing it first."
+    if ($desiredVersion -and (Compare-VersionStrings $desiredVersion $installedVersion) -gt 0) {
+        if ($bundledVersion) {
+            Write-Info "The bundled manager is newer than the installed one. Refreshing it first."
+        } else {
+            Write-Info "A newer manager script is available from GitHub. Refreshing it first."
+        }
         $script:InstallDir = [System.IO.Path]::GetFullPath($existingInstallDir)
         Install-ManagerScript
         Write-GlobalConfig

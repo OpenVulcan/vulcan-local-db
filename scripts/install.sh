@@ -577,17 +577,25 @@ refresh_installed_controller_from_bundle_if_needed() {
   local controller_path="$2"
   local bundled_path=""
   local bundled_version=""
+  local desired_version=""
   local installed_version=""
   local previous_install_dir="${INSTALL_DIR}"
 
   bundled_path="$(bundled_controller_path)"
-  [[ -f "${bundled_path}" ]] || return 0
-
-  bundled_version="$(bundled_controller_version || true)"
+  if [[ -f "${bundled_path}" ]]; then
+    bundled_version="$(bundled_controller_version || true)"
+    desired_version="${bundled_version}"
+  else
+    desired_version="$(try_fetch_remote_script_version "vldb" || true)"
+  fi
   installed_version="$(extract_script_version_from_file "${controller_path}" || true)"
 
-  if [[ -n "${bundled_version}" && "$(version_compare "${bundled_version}" "${installed_version}")" == "1" ]]; then
-    line "The bundled manager is newer than the installed one (${bundled_version} > ${installed_version:-unknown}). Refreshing it first." "安装包内置的管理器比已安装版本更新（${bundled_version} > ${installed_version:-unknown}），先刷新本地管理器。"
+  if [[ -n "${desired_version}" && "$(version_compare "${desired_version}" "${installed_version}")" == "1" ]]; then
+    if [[ -n "${bundled_version}" ]]; then
+      line "The bundled manager is newer than the installed one (${bundled_version} > ${installed_version:-unknown}). Refreshing it first." "安装包内置的管理器比已安装版本更新（${bundled_version} > ${installed_version:-unknown}），先刷新本地管理器。"
+    else
+      line "A newer manager script is available from GitHub (${desired_version} > ${installed_version:-unknown}). Refreshing it first." "GitHub 上有更新的管理器脚本（${desired_version} > ${installed_version:-unknown}），先刷新本地管理器。"
+    fi
     INSTALL_DIR="${existing_install_dir}"
     install_manager_script
     write_global_config
