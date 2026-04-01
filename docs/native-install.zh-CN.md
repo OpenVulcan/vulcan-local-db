@@ -149,8 +149,8 @@ Windows PowerShell：
 
 详细接口与调用方式可继续参考：
 
-- [../vldb-lancedb/docs/README.zh-CN.md](../vldb-lancedb/docs/README.zh-CN.md)
-- [../vldb-sqlite/docs/README.zh-CN.md](../vldb-sqlite/docs/README.zh-CN.md)
+- [OpenVulcan/vldb-lancedb](https://github.com/OpenVulcan/vldb-lancedb/blob/main/docs/README.zh-CN.md)
+- [OpenVulcan/vldb-sqlite](https://github.com/OpenVulcan/vldb-sqlite/blob/main/docs/README.zh-CN.md)
 
 ## 注意事项
 

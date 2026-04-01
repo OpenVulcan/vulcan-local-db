@@ -169,13 +169,13 @@ cargo build
   - English: [docs/docker.en.md](./docs/docker.en.md)
 - 服务说明：
   - `vldb-lancedb`
-    - README：[vldb-lancedb/README.md](./vldb-lancedb/README.md)
-    - 中文：[vldb-lancedb/docs/README.zh-CN.md](./vldb-lancedb/docs/README.zh-CN.md)
-    - English: [vldb-lancedb/docs/README.en.md](./vldb-lancedb/docs/README.en.md)
+    - README：[OpenVulcan/vldb-lancedb](https://github.com/OpenVulcan/vldb-lancedb)
+    - 中文：[vldb-lancedb/docs/README.zh-CN.md](https://github.com/OpenVulcan/vldb-lancedb/blob/main/docs/README.zh-CN.md)
+    - English: [vldb-lancedb/docs/README.en.md](https://github.com/OpenVulcan/vldb-lancedb/blob/main/docs/README.en.md)
   - `vldb-sqlite`
-    - README：[vldb-sqlite/README.md](./vldb-sqlite/README.md)
-    - 中文：[vldb-sqlite/docs/README.zh-CN.md](./vldb-sqlite/docs/README.zh-CN.md)
-    - English: [vldb-sqlite/docs/README.en.md](./vldb-sqlite/docs/README.en.md)
+    - README：[OpenVulcan/vldb-sqlite](https://github.com/OpenVulcan/vldb-sqlite)
+    - 中文：[vldb-sqlite/docs/README.zh-CN.md](https://github.com/OpenVulcan/vldb-sqlite/blob/main/docs/README.zh-CN.md)
+    - English: [vldb-sqlite/docs/README.en.md](https://github.com/OpenVulcan/vldb-sqlite/blob/main/docs/README.en.md)
 - 管理器说明：
   - `vldb-manager`
     - README：[vldb-manager/README.md](./vldb-manager/README.md)

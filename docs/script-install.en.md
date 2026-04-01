@@ -121,5 +121,5 @@ The `VulcanLocalDB Manager Script` can manage installed instances, adjust IP, po
 
 - Native binary archive install: [native-install.en.md](./native-install.en.md)
 - Docker quick install: [docker-install.en.md](./docker-install.en.md)
-- LanceDB service guide: [../vldb-lancedb/docs/README.en.md](../vldb-lancedb/docs/README.en.md)
-- SQLite service guide: [../vldb-sqlite/docs/README.en.md](../vldb-sqlite/docs/README.en.md)
+- LanceDB service guide: [OpenVulcan/vldb-lancedb](https://github.com/OpenVulcan/vldb-lancedb/blob/main/docs/README.en.md)
+- SQLite service guide: [OpenVulcan/vldb-sqlite](https://github.com/OpenVulcan/vldb-sqlite/blob/main/docs/README.en.md)

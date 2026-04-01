@@ -169,13 +169,13 @@ For local image builds, Dockerfiles, compose-based development, and custom Docke
   - Chinese: [docs/docker.zh-CN.md](./docs/docker.zh-CN.md)
 - Service guides:
   - `vldb-lancedb`
-    - README: [vldb-lancedb/README.md](./vldb-lancedb/README.md)
-    - English: [vldb-lancedb/docs/README.en.md](./vldb-lancedb/docs/README.en.md)
-    - Chinese: [vldb-lancedb/docs/README.zh-CN.md](./vldb-lancedb/docs/README.zh-CN.md)
+    - README: [OpenVulcan/vldb-lancedb](https://github.com/OpenVulcan/vldb-lancedb)
+    - English: [vldb-lancedb/docs/README.en.md](https://github.com/OpenVulcan/vldb-lancedb/blob/main/docs/README.en.md)
+    - Chinese: [vldb-lancedb/docs/README.zh-CN.md](https://github.com/OpenVulcan/vldb-lancedb/blob/main/docs/README.zh-CN.md)
   - `vldb-sqlite`
-    - README: [vldb-sqlite/README.md](./vldb-sqlite/README.md)
-    - English: [vldb-sqlite/docs/README.en.md](./vldb-sqlite/docs/README.en.md)
-    - Chinese: [vldb-sqlite/docs/README.zh-CN.md](./vldb-sqlite/docs/README.zh-CN.md)
+    - README: [OpenVulcan/vldb-sqlite](https://github.com/OpenVulcan/vldb-sqlite)
+    - English: [vldb-sqlite/docs/README.en.md](https://github.com/OpenVulcan/vldb-sqlite/blob/main/docs/README.en.md)
+    - Chinese: [vldb-sqlite/docs/README.zh-CN.md](https://github.com/OpenVulcan/vldb-sqlite/blob/main/docs/README.zh-CN.md)
 - Manager guide:
   - `vldb-manager`
     - README: [vldb-manager/README.md](./vldb-manager/README.md)

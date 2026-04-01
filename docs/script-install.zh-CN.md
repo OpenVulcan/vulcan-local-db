@@ -130,5 +130,5 @@ vldb.cmd
 
 - 二进制发布包安装说明：[native-install.zh-CN.md](./native-install.zh-CN.md)
 - Docker 快速安装说明：[docker-install.zh-CN.md](./docker-install.zh-CN.md)
-- LanceDB 服务说明：[../vldb-lancedb/docs/README.zh-CN.md](../vldb-lancedb/docs/README.zh-CN.md)
-- SQLite 服务说明：[../vldb-sqlite/docs/README.zh-CN.md](../vldb-sqlite/docs/README.zh-CN.md)
+- LanceDB 服务说明：[OpenVulcan/vldb-lancedb](https://github.com/OpenVulcan/vldb-lancedb/blob/main/docs/README.zh-CN.md)
+- SQLite 服务说明：[OpenVulcan/vldb-sqlite](https://github.com/OpenVulcan/vldb-sqlite/blob/main/docs/README.zh-CN.md)

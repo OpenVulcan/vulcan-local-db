@@ -149,8 +149,8 @@ Check that the process is listening on the expected port, then connect with your
 
 Detailed service usage:
 
-- [../vldb-lancedb/docs/README.en.md](../vldb-lancedb/docs/README.en.md)
-- [../vldb-sqlite/docs/README.en.md](../vldb-sqlite/docs/README.en.md)
+- [OpenVulcan/vldb-lancedb](https://github.com/OpenVulcan/vldb-lancedb/blob/main/docs/README.en.md)
+- [OpenVulcan/vldb-sqlite](https://github.com/OpenVulcan/vldb-sqlite/blob/main/docs/README.en.md)
 
 ## Notes
 
